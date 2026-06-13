@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <!-- Spring Boot 4 (Spring Framework 7) supports modern JDKs incl. 25.
+             Adjust to the latest 4.0.x your repo resolves if needed. -->
+        <version>4.0.0</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>error-demo</artifactId>
+    <version>0.1.0</version>
+    <name>error-demo</name>
+    <description>Spring Boot app that triggers varied exceptions to exercise the JVMTI agent</description>
+
+    <properties>
+        <!-- Target JDK 25: Spring Boot 4 runs there, and it is >= 24 so the
+             agent's BCI shadow path (java.lang.classfile) can be exercised too.
+             Build with JDK 25+ (your JDK 26 emits release-25 bytecode fine). -->
+        <java.version>25</java.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <!-- maven-compiler-plugin defaults to debug=true, so the produced
+                 bytecode includes the LocalVariableTable: the agent can read
+                 named local values via JVMTI without needing the BCI path. -->
+        </plugins>
+    </build>
+</project>

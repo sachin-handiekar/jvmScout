@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JVMTI Exception Monitor</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">◎</span>
+        <span class="brand-text">JVMTI&nbsp;Monitor</span>
+      </div>
+      <nav class="nav">
+        <a href="#/dashboard" data-route="dashboard"><span class="ic">▦</span><span class="lbl">Dashboard</span></a>
+        <a href="#/exceptions" data-route="exceptions"><span class="ic">⚠</span><span class="lbl">Exceptions</span></a>
+        <a href="#/live" data-route="live"><span class="ic">⦿</span><span class="lbl">Live Feed</span><span id="live-badge" class="badge hidden">0</span></a>
+        <a href="#/jvm" data-route="jvm"><span class="ic">☕</span><span class="lbl">JVM Info</span></a>
+      </nav>
+      <div class="ws-status">
+        <span id="ws-dot" class="dot dot-off"></span>
+        <span id="ws-text" class="lbl">disconnected</span>
+      </div>
+    </aside>
+    <main id="view" class="view"></main>
+  </div>
+  <script src="/js/app.js"></script>
+</body>
+</html>

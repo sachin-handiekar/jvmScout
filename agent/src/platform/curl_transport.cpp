@@ -1,0 +1,63 @@
+#include "itransport.h"
+
+#include "config.h"
+
+#include <curl/curl.h>
+
+#include <string>
+
+namespace {
+
+size_t discard_body(char* /*ptr*/, size_t size, size_t nmemb, void* /*ud*/) {
+    return size * nmemb;  // ignore response body
+}
+
+class CurlTransport : public ITransport {
+public:
+    CurlTransport(std::string url, int timeout_ms)
+        : url_(std::move(url)), timeout_ms_(timeout_ms) {
+        curl_global_init(CURL_GLOBAL_DEFAULT);
+    }
+    ~CurlTransport() override { curl_global_cleanup(); }
+
+    bool send(const std::string& body) override {
+        CURL* curl = curl_easy_init();
+        if (!curl) return false;
+
+        struct curl_slist* headers = nullptr;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+
+        curl_easy_setopt(curl, CURLOPT_URL, url_.c_str());
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.data());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, static_cast<long>(timeout_ms_));
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, discard_body);
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+
+        CURLcode rc = curl_easy_perform(curl);
+        long status = 0;
+        if (rc == CURLE_OK) {
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+        }
+
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+        return rc == CURLE_OK && status >= 200 && status < 300;
+    }
+
+    const char* name() const override { return "libcurl"; }
+
+private:
+    std::string url_;
+    int timeout_ms_;
+};
+
+}  // namespace
+
+std::unique_ptr<ITransport> create_transport(const AgentConfig& cfg) {
+    std::string scheme = "http://";
+    std::string url = scheme + cfg.host + ":" + std::to_string(cfg.port) + cfg.path;
+    return std::make_unique<CurlTransport>(url, cfg.timeout_ms);
+}

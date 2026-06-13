@@ -1,0 +1,41 @@
+#ifndef JVMTI_AGENT_CONFIG_H
+#define JVMTI_AGENT_CONFIG_H
+
+#include <string>
+#include <vector>
+#include <cstdint>
+
+// Plain-old-data configuration parsed from the -agentpath option string
+// (key=val,key=val,...). See PLAN.md section 4.1 for the full key reference.
+struct AgentConfig {
+    std::string host = "localhost";
+    int port = 8080;
+    std::string path = "/collector";
+    std::string deployment;
+    bool console = true;
+    int depth = 3;            // object-inspection recursion depth
+    int timeout_ms = 5000;    // HTTP timeout
+
+    // Filtering: exception-type denylist and throw-site (location) denylist,
+    // plus an optional allowlist that, when non-empty, switches to allow-only mode.
+    std::vector<std::string> deny;             // exception class signatures
+    std::vector<std::string> location_deny;    // throwing class signatures
+    std::vector<std::string> capture_packages; // allowlist mode when non-empty
+
+    // Bytecode instrumentation (shadow local capture).
+    bool bci = false;
+    std::string bci_jar;                       // auto-detected next to the library if empty
+    std::vector<std::string> bci_packages;     // allowlist of packages to instrument
+    std::vector<std::string> bci_exclude;
+    bool bci_verbose = false;
+
+    std::string instance_id;                   // auto UUID if empty
+    std::vector<std::string> env_capture;      // env var glob patterns
+    std::vector<std::string> redact_props;     // sensitive sys-prop keys to redact
+};
+
+// Parse the raw -agentpath option string into an AgentConfig, applying defaults
+// (including the built-in deny/location_deny/redact_props pattern sets).
+AgentConfig parse_config(const char* options);
+
+#endif  // JVMTI_AGENT_CONFIG_H

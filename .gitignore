@@ -1,0 +1,22 @@
+# Native build
+agent/build/
+*.dll
+*.so
+*.dylib
+*.obj
+*.o
+
+# Java
+*.class
+bci-classfile/target/
+
+# Python
+__pycache__/
+*.pyc
+collector/.venv/
+collector/*.db
+collector/*.db-*
+
+# Editors
+.idea/
+.vscode/
