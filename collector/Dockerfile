@@ -50,4 +50,6 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz').status==200 else 1)"
 
-CMD ["python", "-m", "collector"]
+# Apply DB migrations, then start the collector. `alembic upgrade head` is
+# idempotent and works against SQLite or Postgres (COLLECTOR_DB_URL).
+CMD ["sh", "-c", "python -m alembic upgrade head && python -m collector"]

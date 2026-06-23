@@ -160,6 +160,41 @@ proxy in front of the collector.
   injects shadow-capture calls so the agent recovers local *values* by slot
   (`source: "bci_shadow"`); the UI marks these with a ● badge.
 
+## Database & migrations
+
+The collector uses SQLAlchemy (async) and ships with **SQLite** by default
+(`sqlite+aiosqlite:///./collector.db`). Schema is managed with **Alembic**.
+
+```bash
+cd collector
+PYTHONPATH=src alembic upgrade head     # create/upgrade the schema
+PYTHONPATH=src alembic revision -m "msg" --autogenerate   # author a new migration
+```
+
+For zero-config local dev, `python -m collector` also calls `create_all` on
+startup, so a fresh SQLite DB just works without running Alembic. In Docker the
+container runs `alembic upgrade head` before starting. **After any schema change,
+run `alembic upgrade head`** (a plain SQLite file created by an older build won't
+auto-gain new columns — recreate it or migrate).
+
+### Moving from SQLite to Postgres
+
+The same models and migrations target Postgres — only the URL and driver change:
+
+1. Install the async driver: `pip install asyncpg` (already implied for Docker —
+   add it to `requirements.txt` or the image).
+2. Point the collector at Postgres:
+   ```bash
+   export COLLECTOR_DB_URL="postgresql+asyncpg://user:pass@host:5432/jvmscout"
+   ```
+3. Create the schema: `PYTHONPATH=src alembic upgrade head`.
+4. Start the collector. (To migrate existing data, dump the SQLite tables and
+   load them into Postgres with your tool of choice — there's no automatic copy.)
+
+Postgres is recommended once you outgrow a single process: the in-memory
+WebSocket fan-out and rate-limiter are per-process, so horizontal scaling also
+needs shared infrastructure for those (not yet built).
+
 ## Redaction
 
 Two layers, defense in depth:
