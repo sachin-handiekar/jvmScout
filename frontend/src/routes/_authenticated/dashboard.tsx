@@ -21,6 +21,7 @@ import {
 } from "recharts";
 
 import { supabase } from "@/integrations/supabase/client";
+import { fetchTimeseries } from "@/integrations/collector/client";
 import { useAppContext, type TimeRange } from "@/lib/app-context";
 import { compactNumber, relativeTime, sparklineForEvent, isIncreasing } from "@/lib/format";
 import { Sparkline } from "@/components/events/Sparkline";
@@ -123,6 +124,13 @@ function DashboardPage() {
   const now = Date.now();
   const cutoff = now - windowMs;
 
+  // Real per-bucket volume from the collector (caught vs uncaught), env-scoped.
+  const bucketCount = hours <= 1 ? 12 : hours <= 24 ? 24 : hours <= 24 * 7 ? 28 : 30;
+  const tsQuery = useQuery({
+    queryKey: ["dashboard-timeseries", environment, timeRange],
+    queryFn: () => fetchTimeseries(hours, bucketCount, environment),
+  });
+
   const envApps = useMemo(
     () => (query.data?.apps ?? []).filter((a) => a.environment === environment),
     [query.data, environment],
@@ -180,47 +188,25 @@ function DashboardPage() {
     return Math.max(0, Math.min(100, Math.round(100 - penalty * 30)));
   }, [periodEvents, newEvents, increasing]);
 
-  // Volume chart: bucket the window
+  // Volume chart: real per-bucket counts from the collector time-series.
+  // Only the two event types the agent actually produces (uncaught/caught) carry
+  // data; the remaining (log/http) series stay at zero until those are captured.
   const chart = useMemo(() => {
-    const buckets = hours <= 1 ? 12 : hours <= 24 ? 24 : hours <= 24 * 7 ? 28 : 30;
-    const bucketMs = windowMs / buckets;
-    const rows: Array<Record<string, number | string>> = [];
-    for (let i = 0; i < buckets; i++) {
-      const t = cutoff + i * bucketMs;
-      const row: Record<string, number | string> = { t };
-      TYPES.forEach((ty) => (row[ty] = 0));
-      rows.push(row);
-    }
-    periodEvents.forEach((e) => {
-      const hits = hitsInPeriod(e);
-      if (hits === 0) return;
-      // Distribute hits across buckets with a deterministic shape weighted toward last_seen
-      const lastIdx = Math.min(
-        buckets - 1,
-        Math.max(0, Math.floor((new Date(e.last_seen).getTime() - cutoff) / bucketMs)),
-      );
-      const spread = Math.max(2, Math.floor(buckets / (isIncreasing(e.id, e.hit_count) ? 6 : 3)));
-      const startIdx = Math.max(0, lastIdx - spread + 1);
-      const seed = hash01(e.id);
-      let total = 0;
-      const weights: number[] = [];
-      for (let i = startIdx; i <= lastIdx; i++) {
-        const w = 0.5 + ((seed * 1000 + i * 37) % 100) / 100;
-        weights.push(w);
-        total += w;
-      }
-      weights.forEach((w, k) => {
-        const share = (hits * w) / total;
-        (rows[startIdx + k][e.type] as number) += share;
-      });
-    });
-    return rows.map((r) => {
-      const out: Record<string, number | string> = { ...r };
-      out.label = formatBucketLabel(r.t as number, hours);
-      TYPES.forEach((ty) => (out[ty] = Math.round(out[ty] as number)));
-      return out;
-    });
-  }, [periodEvents, cutoff, windowMs, hours]);
+    const series = tsQuery.data ?? [];
+    return series.map((b) => ({
+      label: formatBucketLabel(b.t, hours),
+      uncaught_exception: b.uncaught,
+      caught_exception: b.caught,
+      logged_error: 0,
+      logged_warning: 0,
+      http_error: 0,
+    }));
+  }, [tsQuery.data, hours]);
+
+  const chartTotal = useMemo(
+    () => (tsQuery.data ?? []).reduce((sum, b) => sum + b.caught + b.uncaught, 0),
+    [tsQuery.data],
+  );
 
   // New & increasing
   const newAndIncreasing = useMemo(() => {
@@ -338,7 +324,7 @@ function DashboardPage() {
             }
           />
           <div className="h-72 px-2 pb-3">
-            {chart.length === 0 || totalHits === 0 ? (
+            {chart.length === 0 || chartTotal === 0 ? (
               <EmptyChart />
             ) : (
               <ResponsiveContainer width="100%" height="100%">

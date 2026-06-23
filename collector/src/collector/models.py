@@ -72,6 +72,7 @@ class ExceptionEvent(_Wire):
     capture_mode: Optional[str] = None
     hit_count: int = 1
     deployment_id: Optional[str] = None
+    environment: Optional[str] = None
     instance_id: Optional[str] = None
     exception_type: Optional[str] = None
     exception_message: Optional[str] = None

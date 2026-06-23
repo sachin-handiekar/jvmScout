@@ -247,6 +247,7 @@ void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
         ev.hit_count = d.hit_count;
         ev.timestamp = iso8601_now();
         ev.deployment_id = ctx->config.deployment;
+        ev.environment = ctx->config.environment;
         ev.instance_id = ctx->config.instance_id;
         ev.exception_type = ex_type;
         ev.exception_message = call_string_method(jni, exception, "getMessage");

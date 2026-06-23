@@ -56,6 +56,7 @@ struct CapturedEvent {
     uint64_t hit_count = 0;
     std::string timestamp;  // ISO-8601 UTC
     std::string deployment_id;
+    std::string environment;
     std::string instance_id;
 
     std::string exception_type;     // slash form, e.g. java/lang/NullPointerException

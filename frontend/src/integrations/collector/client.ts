@@ -149,6 +149,24 @@ export async function fetchExceptionDetail(rowId: number | string): Promise<any>
   return http<any>(`/exceptions/${rowId}`);
 }
 
+export interface TimeseriesBucket {
+  t: number; // epoch ms (bucket start)
+  caught: number;
+  uncaught: number;
+}
+
+/** Real per-time-bucket exception counts (caught vs uncaught) from the collector. */
+export async function fetchTimeseries(
+  hours: number,
+  buckets: number,
+  environment?: string,
+): Promise<TimeseriesBucket[]> {
+  const params = new URLSearchParams({ hours: String(hours), buckets: String(buckets) });
+  if (environment) params.set("environment", environment);
+  const res = await http<{ series: TimeseriesBucket[] }>(`/stats/timeseries?${params.toString()}`);
+  return res.series ?? [];
+}
+
 /**
  * Validate the current API key against an auth-gated endpoint.
  * Returns true if the collector accepts the request (including the case where

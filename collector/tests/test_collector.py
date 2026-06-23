@@ -120,6 +120,30 @@ def test_delete_all_requires_confirm(client):
     assert client.get("/exceptions", headers=AUTH).json()["total"] == 0
 
 
+# --- timeseries ------------------------------------------------------------
+
+def test_timeseries_buckets_and_counts(client):
+    client.post("/collector", json=exception_event(caught=False), headers=AUTH)
+    client.post("/collector", json=exception_event(caught=True, fingerprint="x"), headers=AUTH)
+    ts = client.get("/stats/timeseries", params={"hours": 24, "buckets": 24}, headers=AUTH).json()
+    assert len(ts["series"]) == 24
+    assert sum(b["uncaught"] for b in ts["series"]) == 1
+    assert sum(b["caught"] for b in ts["series"]) == 1
+
+
+def test_timeseries_environment_filter(client):
+    client.post("/collector", json=exception_event(environment="staging"), headers=AUTH)
+    client.post("/collector", json=exception_event(environment="production", fingerprint="p"), headers=AUTH)
+    ts = client.get("/stats/timeseries", params={"environment": "staging"}, headers=AUTH).json()
+    assert sum(b["uncaught"] + b["caught"] for b in ts["series"]) == 1
+
+
+def test_timeseries_production_includes_untagged(client):
+    client.post("/collector", json=exception_event(), headers=AUTH)  # no environment set
+    ts = client.get("/stats/timeseries", params={"environment": "production"}, headers=AUTH).json()
+    assert sum(b["uncaught"] + b["caught"] for b in ts["series"]) == 1
+
+
 # --- live websocket --------------------------------------------------------
 
 def test_ws_live_broadcasts_exception(client):

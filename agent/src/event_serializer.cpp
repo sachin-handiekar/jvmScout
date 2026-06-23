@@ -51,6 +51,7 @@ std::string serialize_event(const CapturedEvent& ev) {
     w.field("captureMode", capture_mode_name(ev.mode));
     w.field("hitCount", static_cast<unsigned long long>(ev.hit_count));
     w.field("deploymentId", ev.deployment_id);
+    w.field("environment", ev.environment);
     w.field("instanceId", ev.instance_id);
     w.field("exceptionType", ev.exception_type);
     w.field("exceptionMessage", ev.exception_message);

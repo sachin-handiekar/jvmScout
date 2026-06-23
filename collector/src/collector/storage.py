@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy import (
-    Boolean, Integer, String, Text, delete, func, select,
+    Boolean, Integer, String, Text, delete, func, or_, select,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -29,6 +29,7 @@ class ExceptionRow(Base):
     capture_mode: Mapped[Optional[str]] = mapped_column(String(16))
     hit_count: Mapped[int] = mapped_column(Integer, default=1)
     deployment_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    environment: Mapped[Optional[str]] = mapped_column(String(32), index=True)
     instance_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     exception_type: Mapped[Optional[str]] = mapped_column(String(256), index=True)
     exception_message: Mapped[Optional[str]] = mapped_column(Text)
@@ -80,6 +81,18 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _env_clause(environment: str):
+    """Filter condition for an environment. 'production' also matches untagged
+    rows (NULL/empty), mirroring the UI's default-to-production behavior."""
+    if environment == "production":
+        return or_(
+            ExceptionRow.environment == "production",
+            ExceptionRow.environment.is_(None),
+            ExceptionRow.environment == "",
+        )
+    return ExceptionRow.environment == environment
+
+
 async def init_db() -> None:
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -98,6 +111,7 @@ async def store_exception(ev: ExceptionEvent, raw: dict[str, Any]) -> int:
         capture_mode=ev.capture_mode,
         hit_count=ev.hit_count or 1,
         deployment_id=ev.deployment_id,
+        environment=ev.environment,
         instance_id=ev.instance_id,
         exception_type=ev.exception_type,
         exception_message=ev.exception_message,
@@ -143,14 +157,15 @@ async def store_agent_start(ev: AgentStartEvent, raw: dict[str, Any]) -> None:
 
 async def list_exceptions(*, limit: int, offset: int, exception_type: Optional[str],
                           deployment_id: Optional[str], caught: Optional[bool],
-                          fingerprint: Optional[str]) -> tuple[list[dict], int]:
+                          fingerprint: Optional[str],
+                          environment: Optional[str] = None) -> tuple[list[dict], int]:
     cols = (
         ExceptionRow.id, ExceptionRow.received_at, ExceptionRow.timestamp,
         ExceptionRow.fingerprint, ExceptionRow.capture_mode, ExceptionRow.hit_count,
-        ExceptionRow.deployment_id, ExceptionRow.instance_id, ExceptionRow.exception_type,
-        ExceptionRow.exception_message, ExceptionRow.caught, ExceptionRow.class_name,
-        ExceptionRow.method_name, ExceptionRow.line_number, ExceptionRow.source_file,
-        ExceptionRow.thread_name,
+        ExceptionRow.deployment_id, ExceptionRow.environment, ExceptionRow.instance_id,
+        ExceptionRow.exception_type, ExceptionRow.exception_message, ExceptionRow.caught,
+        ExceptionRow.class_name, ExceptionRow.method_name, ExceptionRow.line_number,
+        ExceptionRow.source_file, ExceptionRow.thread_name,
     )
     q = select(*cols).order_by(ExceptionRow.id.desc())
     cq = select(func.count()).select_from(ExceptionRow)
@@ -160,6 +175,10 @@ async def list_exceptions(*, limit: int, offset: int, exception_type: Optional[s
     if deployment_id:
         q = q.where(ExceptionRow.deployment_id == deployment_id)
         cq = cq.where(ExceptionRow.deployment_id == deployment_id)
+    if environment:
+        clause = _env_clause(environment)
+        q = q.where(clause)
+        cq = cq.where(clause)
     if caught is not None:
         q = q.where(ExceptionRow.caught == caught)
         cq = cq.where(ExceptionRow.caught == caught)
@@ -231,6 +250,39 @@ async def stats() -> dict:
             {"deployment": d or "(none)", "lastSeen": ts} for d, ts in recent_dep
         ],
     }
+
+
+async def timeseries(*, hours: int, buckets: int,
+                     environment: Optional[str] = None) -> dict:
+    """Bucket exception counts over the last `hours` into `buckets` slots,
+    split by caught vs uncaught. Buckets by collector receive time."""
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(hours=hours)
+    start_iso = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    start_ts = start.timestamp()
+    bucket_s = max(1.0, (hours * 3600.0) / buckets)
+
+    q = select(ExceptionRow.received_at, ExceptionRow.caught).where(
+        ExceptionRow.received_at >= start_iso)
+    if environment:
+        q = q.where(_env_clause(environment))
+
+    series = [
+        {"t": int((start_ts + i * bucket_s) * 1000), "caught": 0, "uncaught": 0}
+        for i in range(buckets)
+    ]
+    async with session() as s:
+        rows = (await s.execute(q)).all()
+    for received_at, caught in rows:
+        try:
+            t = datetime.strptime(received_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc).timestamp()
+        except (ValueError, TypeError):
+            continue
+        idx = int((t - start_ts) / bucket_s)
+        idx = 0 if idx < 0 else (buckets - 1 if idx >= buckets else idx)
+        series[idx]["caught" if caught else "uncaught"] += 1
+    return {"hours": hours, "buckets": buckets, "series": series}
 
 
 async def list_instances() -> list[dict]:

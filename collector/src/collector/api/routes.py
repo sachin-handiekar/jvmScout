@@ -113,12 +113,14 @@ async def get_exceptions(
     offset: int = Query(0, ge=0),
     type: Optional[str] = None,
     deployment: Optional[str] = None,
+    environment: Optional[str] = None,
     caught: Optional[bool] = None,
     fingerprint: Optional[str] = None,
 ) -> dict:
     items, total = await storage.list_exceptions(
         limit=limit, offset=offset, exception_type=type,
-        deployment_id=deployment, caught=caught, fingerprint=fingerprint)
+        deployment_id=deployment, caught=caught, fingerprint=fingerprint,
+        environment=environment)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
@@ -150,6 +152,15 @@ async def delete_all(confirm: bool = Query(False)) -> dict:
 @router.get("/stats")
 async def get_stats() -> dict:
     return await storage.stats()
+
+
+@router.get("/stats/timeseries")
+async def get_timeseries(
+    hours: int = Query(24, ge=1, le=24 * 90),
+    buckets: int = Query(24, ge=1, le=200),
+    environment: Optional[str] = None,
+) -> dict:
+    return await storage.timeseries(hours=hours, buckets=buckets, environment=environment)
 
 
 @router.get("/jvm-info")
