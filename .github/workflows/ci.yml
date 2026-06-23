@@ -36,6 +36,9 @@ jobs:
       - name: Build
         run: cmake --build agent/build --config Release
 
+      - name: Run unit tests
+        run: ctest --test-dir agent/build -C Release --output-on-failure
+
       - name: Show built library
         shell: bash
         run: |

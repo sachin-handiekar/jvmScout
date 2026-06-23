@@ -3,7 +3,7 @@
 #include <cstdio>
 
 uint64_t fnv1a64(const std::string& s) {
-    uint64_t hash = 1469598103934665603ULL;  // FNV offset basis
+    uint64_t hash = 14695981039346656037ULL;  // FNV-1a 64-bit offset basis (0xcbf29ce484222325)
     for (unsigned char c : s) {
         hash ^= c;
         hash *= 1099511628211ULL;  // FNV prime
