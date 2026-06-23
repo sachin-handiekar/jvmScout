@@ -47,4 +47,9 @@ struct AgentConfig {
 // (including the built-in deny/location_deny/redact_props pattern sets).
 AgentConfig parse_config(const char* options);
 
+// True if `name` contains any of `patterns` (case-insensitive substring). Used
+// to decide whether a captured value (by variable/property/env name) should be
+// redacted. Shared by the local-variable capture path and system-info capture.
+bool redact_matches(const std::vector<std::string>& patterns, const std::string& name);
+
 #endif  // JVMTI_AGENT_CONFIG_H

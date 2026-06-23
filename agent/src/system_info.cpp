@@ -66,14 +66,7 @@ bool glob_match(const std::string& pat, const std::string& s) {
 }
 
 bool is_redacted(const AgentConfig& cfg, const std::string& key) {
-    std::string k = key;
-    std::transform(k.begin(), k.end(), k.begin(), ::tolower);
-    for (const auto& pat : cfg.redact_props) {
-        std::string p = pat;
-        std::transform(p.begin(), p.end(), p.begin(), ::tolower);
-        if (k.find(p) != std::string::npos) return true;
-    }
-    return false;
+    return redact_matches(cfg.redact_props, key);
 }
 
 void write_jvm_args(JsonWriter& w, JNIEnv* jni) {

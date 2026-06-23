@@ -1,6 +1,7 @@
 #include "stack_walker.h"
 
 #include "bci_shadow.h"
+#include "config.h"
 #include "ifilter.h"
 #include "object_inspector.h"
 #include "jvmti_utils.h"
@@ -173,6 +174,16 @@ std::vector<StackFrame> StackWalker::walk(JNIEnv* jni, jthread thread,
 
         if (capture_locals && frame.app_code) {
             capture_frame_locals(jni, thread, i, method, frame);
+            // Mask sensitive values by variable name (covers both the
+            // debug_info and bci_shadow locals just populated) so secrets never
+            // leave the JVM.
+            if (redact_props_ && !redact_props_->empty()) {
+                for (auto& lv : frame.locals) {
+                    if (!lv.name.empty() && redact_matches(*redact_props_, lv.name)) {
+                        lv.value = "***";
+                    }
+                }
+            }
         }
 
         frames.push_back(std::move(frame));

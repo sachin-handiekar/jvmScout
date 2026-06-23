@@ -162,13 +162,17 @@ proxy in front of the collector.
 
 ## Redaction
 
-The agent already masks sensitive **system properties / env vars** by key
-(`redact_props`). In addition, the dashboard's **Redaction** screen manages rules
-the collector applies to **captured local-variable values** (and the exception
-message) on ingest — before anything is stored or broadcast:
+Two layers, defense in depth:
 
-- **identifier** rules mask a local whose name matches (e.g. `password`, `token`);
-- **pattern** rules mask any value matching a regex (e.g. card numbers, JWTs).
+- **Agent-side (never leaves the JVM):** `redact_props` masks sensitive
+  **system properties, env vars, and captured local-variable values** by name
+  (case-insensitive substring, e.g. `password`/`token`/`secret`) — the value is
+  replaced with `***` before the event is sent.
+- **Collector-side (centrally managed):** the dashboard's **Redaction** screen
+  manages rules the collector applies to captured local values (and the
+  exception message) on ingest, before anything is stored or broadcast:
+  - **identifier** rules mask a local whose name matches;
+  - **pattern** rules mask any value matching a regex (e.g. card numbers, JWTs).
 
 ## Verified
 

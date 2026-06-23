@@ -2,6 +2,7 @@
 #define JVMTI_AGENT_STACK_WALKER_H
 
 #include <jvmti.h>
+#include <string>
 #include <vector>
 
 #include "event_model.h"
@@ -22,9 +23,11 @@ public:
     static constexpr jint kReducedFrames = 8;
 
     StackWalker(jvmtiEnv* jvmti, const ObjectInspector* inspector,
-                const IFilter* location_filter, BciShadow* shadow = nullptr)
+                const IFilter* location_filter, BciShadow* shadow = nullptr,
+                const std::vector<std::string>* redact_props = nullptr)
         : jvmti_(jvmti), inspector_(inspector),
-          location_filter_(location_filter), shadow_(shadow) {}
+          location_filter_(location_filter), shadow_(shadow),
+          redact_props_(redact_props) {}
 
     // capture_locals=false for REDUCED mode (frames only, no variable reads).
     // max_frames caps how many frames are fetched/resolved (defaults to the full
@@ -40,6 +43,7 @@ private:
     const ObjectInspector* inspector_;
     const IFilter* location_filter_;
     BciShadow* shadow_;
+    const std::vector<std::string>* redact_props_;  // mask local values by name
 };
 
 #endif  // JVMTI_AGENT_STACK_WALKER_H

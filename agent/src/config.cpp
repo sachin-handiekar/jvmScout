@@ -56,6 +56,17 @@ std::vector<std::string> default_redact_props() {
 
 }  // namespace
 
+bool redact_matches(const std::vector<std::string>& patterns, const std::string& name) {
+    std::string k = name;
+    std::transform(k.begin(), k.end(), k.begin(), ::tolower);
+    for (const auto& pat : patterns) {
+        std::string p = pat;
+        std::transform(p.begin(), p.end(), p.begin(), ::tolower);
+        if (!p.empty() && k.find(p) != std::string::npos) return true;
+    }
+    return false;
+}
+
 AgentConfig parse_config(const char* options) {
     AgentConfig cfg;
     cfg.deny = default_type_deny();

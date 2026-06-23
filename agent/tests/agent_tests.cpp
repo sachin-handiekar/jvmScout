@@ -109,6 +109,14 @@ static void test_config_parse() {
     CHECK(cfg.bci_packages.size() == 2);
 }
 
+static void test_redact_matches() {
+    std::vector<std::string> pats = {"password", "secret", "token"};
+    CHECK(redact_matches(pats, "userPassword") == true);   // case-insensitive substring
+    CHECK(redact_matches(pats, "SECRET_KEY") == true);
+    CHECK(redact_matches(pats, "username") == false);
+    CHECK(redact_matches({}, "password") == false);        // no patterns -> never redact
+}
+
 int main() {
     test_fingerprint();
     test_filters();
@@ -116,6 +124,7 @@ int main() {
     test_sampler_lru_bound();
     test_json_escape();
     test_config_parse();
+    test_redact_matches();
     if (g_fail == 0) std::printf("ALL %s\n", "PASS");
     else std::printf("%d CHECK(S) FAILED\n", g_fail);
     return g_fail ? 1 : 0;

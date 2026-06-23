@@ -273,11 +273,13 @@ void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
             ev.metrics = collect_jvm_metrics_cached(jvmti, jni);
             ev.metrics_valid = true;
             StackWalker walker(jvmti, ctx->inspector.get(),
-                               ctx->location_filter.get(), shadow);
+                               ctx->location_filter.get(), shadow,
+                               &ctx->config.redact_props);
             ev.stack = walker.walk(jni, thread, /*capture_locals=*/true);
         } else if (d.mode == CaptureMode::REDUCED) {
             StackWalker walker(jvmti, ctx->inspector.get(),
-                               ctx->location_filter.get(), shadow);
+                               ctx->location_filter.get(), shadow,
+                               &ctx->config.redact_props);
             ev.stack = walker.walk(jni, thread, /*capture_locals=*/false,
                                    StackWalker::kReducedFrames);
         }
