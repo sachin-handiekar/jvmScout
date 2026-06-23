@@ -120,6 +120,31 @@ def test_delete_all_requires_confirm(client):
     assert client.get("/exceptions", headers=AUTH).json()["total"] == 0
 
 
+# --- api tokens (per-token auth) -------------------------------------------
+
+def test_issued_token_grants_access(client):
+    created = client.post("/tokens", json={"name": "agent-1"}, headers=AUTH).json()
+    raw = created["token"]
+    assert raw.startswith("stk_")
+    assert created["token_prefix"] == raw[:10]
+    # The raw token authenticates like the master key...
+    assert client.get("/stats", headers={"X-API-Key": raw}).status_code == 200
+    # ...but a bogus token does not.
+    assert client.get("/stats", headers={"X-API-Key": "stk_bogus"}).status_code == 401
+    # The stored row never contains the raw token.
+    rows = client.get("/config/api_tokens", headers=AUTH).json()
+    assert all(raw not in (r.get("token_hash") or "") for r in rows)
+
+
+def test_revoked_token_is_rejected(client):
+    created = client.post("/tokens", json={"name": "t"}, headers=AUTH).json()
+    raw, tid = created["token"], created["id"]
+    assert client.get("/stats", headers={"X-API-Key": raw}).status_code == 200
+    client.patch(f"/config/api_tokens/{tid}",
+                 json={"revoked_at": "2026-01-01T00:00:00Z"}, headers=AUTH)
+    assert client.get("/stats", headers={"X-API-Key": raw}).status_code == 401
+
+
 # --- redaction -------------------------------------------------------------
 
 def _frame_with_locals(locals_):

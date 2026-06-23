@@ -438,6 +438,17 @@ export async function configDelete(table: string, id: string): Promise<void> {
   await http(`/config/${table}/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+/** Issue an API token server-side; the raw token is returned exactly once. */
+export async function createApiToken(
+  name: string,
+): Promise<{ token: string; token_prefix: string; id: string; name: string }> {
+  return http(`/tokens`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+}
+
 /** Live event stream over the collector WebSocket. */
 export function connectLiveSocket(onMessage: (msg: any) => void): WebSocket | null {
   try {

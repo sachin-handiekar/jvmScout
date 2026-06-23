@@ -18,6 +18,7 @@ import {
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
+import { createApiToken } from "@/integrations/collector/client";
 import { PageHeader } from "@/components/PagePlaceholder";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -582,17 +583,9 @@ function TokensTab() {
 
   const generate = useMutation({
     mutationFn: async () => {
-      const raw = "stk_" + crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "").slice(0, 8);
-      const prefix = raw.slice(0, 10);
-      // Mock hash (this is a prototype). In production, hash server-side.
-      const hash = btoa(raw).slice(0, 40);
-      const { error } = await supabase.from("api_tokens").insert({
-        name: name || "Untitled token",
-        token_prefix: prefix,
-        token_hash: hash,
-      });
-      if (error) throw error;
-      return raw;
+      // Token is generated and hashed server-side; the raw value is returned once.
+      const res = await createApiToken(name || "Untitled token");
+      return res.token;
     },
     onSuccess: (raw) => {
       qc.invalidateQueries({ queryKey: ["api_tokens"] });

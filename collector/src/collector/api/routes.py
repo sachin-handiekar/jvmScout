@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 import time
 from typing import Any, Optional
 
@@ -14,7 +15,9 @@ from fastapi import (
 from .. import redaction, storage
 from ..config import settings
 from ..models import AgentStartEvent, ExceptionEvent
-from ..security import authorize_websocket, client_key, rate_limiter, require_auth
+from ..security import (
+    authorize_websocket, client_key, hash_token, rate_limiter, require_auth, token_store,
+)
 
 log = logging.getLogger("collector.routes")
 
@@ -211,6 +214,24 @@ async def jvm_instances() -> list[dict]:
     return await storage.list_instances()
 
 
+@router.post("/tokens")
+async def create_token(request: Request) -> dict:
+    """Issue an API token: generate it server-side, store only its SHA-256 hash,
+    and return the raw token once. Agents send it as the api_key."""
+    payload = await _read_json_body(request)
+    name = payload.get("name") if isinstance(payload, dict) else None
+    raw = "stk_" + secrets.token_hex(24)
+    prefix = raw[:10]
+    stored = await storage.insert_config("api_tokens", {
+        "name": name or "Untitled token",
+        "token_prefix": prefix,
+        "token_hash": hash_token(raw),
+        "revoked_at": None,
+    })
+    token_store.reset()  # make the new token usable immediately
+    return {"token": raw, "token_prefix": prefix, "id": stored["id"], "name": stored.get("name")}
+
+
 def _check_config_table(table: str) -> None:
     if table not in storage.CONFIG_TABLES:
         raise HTTPException(status_code=404, detail=f"unknown config table: {table}")
@@ -240,6 +261,8 @@ async def patch_config(table: str, entity_id: str, request: Request) -> dict:
     updated = await storage.update_config(table, entity_id, payload)
     if updated is None:
         raise HTTPException(status_code=404, detail="not found")
+    if table == "api_tokens":
+        token_store.reset()  # revocation/edits take effect immediately
     return updated
 
 
@@ -248,12 +271,14 @@ async def remove_config(table: str, entity_id: str) -> dict:
     _check_config_table(table)
     if not await storage.delete_config(table, entity_id):
         raise HTTPException(status_code=404, detail="not found")
+    if table == "api_tokens":
+        token_store.reset()
     return {"deleted": entity_id}
 
 
 @router.websocket("/ws/live")
 async def ws_live(ws: WebSocket) -> None:
-    if not authorize_websocket(ws):
+    if not await authorize_websocket(ws):
         await ws.close(code=1008)  # policy violation
         return
     await manager.connect(ws)
