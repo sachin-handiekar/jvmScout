@@ -57,6 +57,21 @@ class JvmInstanceRow(Base):
     raw_json: Mapped[str] = mapped_column(Text)
 
 
+class ConfigEntityRow(Base):
+    """Generic JSON store for UI-managed config (alert rules, integrations,
+    redaction rules, API tokens, team members, workspace settings). Each row is
+    one entity of a given ``table`` namespace, persisted as opaque JSON so the
+    UI owns the shape."""
+
+    __tablename__ = "config_entities"
+
+    pk: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    table: Mapped[str] = mapped_column(String(64), index=True)
+    entity_id: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[str] = mapped_column(String(32))
+    json_data: Mapped[str] = mapped_column(Text)
+
+
 _engine = create_async_engine(settings.db_url, future=True)
 _Session = async_sessionmaker(_engine, expire_on_commit=False, class_=AsyncSession)
 
@@ -230,6 +245,86 @@ async def get_instance(instance_id: str) -> Optional[dict]:
         row = await s.scalar(
             select(JvmInstanceRow).where(JvmInstanceRow.instance_id == instance_id))
         return json.loads(row.raw_json) if row else None
+
+
+import uuid
+
+# Namespaces the UI is allowed to manage via the generic config API.
+CONFIG_TABLES = frozenset({
+    "alert_rules",
+    "integrations",
+    "redaction_rules",
+    "api_tokens",
+    "team_members",
+    "workspace_settings",
+})
+
+
+def _config_to_dict(row: ConfigEntityRow) -> dict:
+    data = json.loads(row.json_data)
+    data["id"] = row.entity_id
+    data.setdefault("created_at", row.created_at)
+    return data
+
+
+async def list_config(table: str) -> list[dict]:
+    async with session() as s:
+        rows = (await s.execute(
+            select(ConfigEntityRow)
+            .where(ConfigEntityRow.table == table)
+            .order_by(ConfigEntityRow.pk.asc())
+        )).scalars().all()
+    return [_config_to_dict(r) for r in rows]
+
+
+async def insert_config(table: str, payload: dict) -> dict:
+    entity_id = str(payload.get("id") or uuid.uuid4())
+    created_at = str(payload.get("created_at") or _now_iso())
+    data = {k: v for k, v in payload.items() if k != "id"}
+    data["created_at"] = created_at
+    async with session() as s:
+        s.add(ConfigEntityRow(
+            table=table,
+            entity_id=entity_id,
+            created_at=created_at,
+            json_data=json.dumps(data),
+        ))
+        await s.commit()
+    out = dict(data)
+    out["id"] = entity_id
+    return out
+
+
+async def update_config(table: str, entity_id: str, patch: dict) -> Optional[dict]:
+    async with session() as s:
+        row = await s.scalar(
+            select(ConfigEntityRow).where(
+                ConfigEntityRow.table == table,
+                ConfigEntityRow.entity_id == entity_id,
+            ))
+        if not row:
+            return None
+        data = json.loads(row.json_data)
+        for k, v in patch.items():
+            if k != "id":
+                data[k] = v
+        row.json_data = json.dumps(data)
+        await s.commit()
+        return _config_to_dict(row)
+
+
+async def delete_config(table: str, entity_id: str) -> bool:
+    async with session() as s:
+        row = await s.scalar(
+            select(ConfigEntityRow).where(
+                ConfigEntityRow.table == table,
+                ConfigEntityRow.entity_id == entity_id,
+            ))
+        if not row:
+            return False
+        await s.delete(row)
+        await s.commit()
+        return True
 
 
 async def purge_old_records() -> int:
