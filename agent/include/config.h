@@ -16,6 +16,14 @@ struct AgentConfig {
     int depth = 3;            // object-inspection recursion depth
     int timeout_ms = 5000;    // HTTP timeout
 
+    // Transport security. When https is set the collector is reached over TLS;
+    // tls_insecure skips certificate verification (testing/self-signed only).
+    // api_key, if set, is sent as an "Authorization: Bearer <key>" header so an
+    // authenticated collector (COLLECTOR_API_KEY) accepts the agent's events.
+    bool https = false;
+    bool tls_insecure = false;
+    std::string api_key;
+
     // Filtering: exception-type denylist and throw-site (location) denylist,
     // plus an optional allowlist that, when non-empty, switches to allow-only mode.
     std::vector<std::string> deny;             // exception class signatures

@@ -7,22 +7,42 @@
 // no-op so the core capture path is unaffected.
 
 bool BciShadow::ensure_ready(JNIEnv* jni) {
-    if (ready_) return true;
+    // Fast path: already initialized (acquire pairs with the release store below).
+    if (ready_.load(std::memory_order_acquire)) return true;
+
+    // Slow path: serialize first-time resolution. We use a mutex rather than
+    // std::call_once because init can legitimately *fail* (the transformer jar
+    // isn't loaded yet) and must be retried on a later call — a once_flag would
+    // be consumed by the first unsuccessful attempt.
+    std::lock_guard<std::mutex> lock(init_mu_);
+    if (ready_.load(std::memory_order_relaxed)) return true;
+
     jclass local = jni->FindClass("__JvmtiShadow");
     if (!local) {
         if (jni->ExceptionCheck()) jni->ExceptionClear();
-        return false;  // transformer/bootstrap jar not loaded
+        return false;  // transformer/bootstrap jar not loaded yet; retry later
     }
-    shadow_class_ = static_cast<jclass>(jni->NewGlobalRef(local));
+    jclass global = static_cast<jclass>(jni->NewGlobalRef(local));
     jni->DeleteLocalRef(local);
 
-    get_frame_ = jni->GetStaticMethodID(shadow_class_, "getFrame", "(I)[Ljava/lang/Object;");
-    get_metadata_ = jni->GetStaticMethodID(shadow_class_, "getMetadata", "(I)[Ljava/lang/String;");
-    get_slot_types_ = jni->GetStaticMethodID(shadow_class_, "getSlotTypes", "(I)[I");
+    jmethodID get_frame = jni->GetStaticMethodID(global, "getFrame", "(I)[Ljava/lang/Object;");
+    jmethodID get_metadata = jni->GetStaticMethodID(global, "getMetadata", "(I)[Ljava/lang/String;");
+    jmethodID get_slot_types = jni->GetStaticMethodID(global, "getSlotTypes", "(I)[I");
     if (jni->ExceptionCheck()) jni->ExceptionClear();
 
-    ready_ = (get_frame_ != nullptr);
-    return ready_;
+    if (get_frame == nullptr) {
+        jni->DeleteGlobalRef(global);  // don't leak the ref on a failed attempt
+        return false;
+    }
+
+    // Populate members before publishing ready_ so any thread that sees
+    // ready_==true via acquire also sees fully-initialized state.
+    shadow_class_ = global;
+    get_frame_ = get_frame;
+    get_metadata_ = get_metadata;
+    get_slot_types_ = get_slot_types;
+    ready_.store(true, std::memory_order_release);
+    return true;
 }
 
 bool BciShadow::read_frame(JNIEnv* jni, int depth, std::vector<LocalVariable>& out) {

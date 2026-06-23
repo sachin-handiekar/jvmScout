@@ -129,11 +129,12 @@ void StackWalker::capture_frame_locals(JNIEnv* jni, jthread thread, jint depth,
 }
 
 std::vector<StackFrame> StackWalker::walk(JNIEnv* jni, jthread thread,
-                                          bool capture_locals) {
+                                          bool capture_locals, jint max_frames) {
     std::vector<StackFrame> frames;
     jvmtiFrameInfo info[kMaxFrames];
+    jint want = (max_frames > 0 && max_frames < kMaxFrames) ? max_frames : kMaxFrames;
     jint count = 0;
-    if (jvmti_->GetStackTrace(thread, 0, kMaxFrames, info, &count) != JVMTI_ERROR_NONE) {
+    if (jvmti_->GetStackTrace(thread, 0, want, info, &count) != JVMTI_ERROR_NONE) {
         return frames;
     }
 

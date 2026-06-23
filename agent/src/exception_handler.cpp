@@ -29,8 +29,19 @@ struct ReentranceGuard {
     }
 };
 
+// Cap on captured exception/cause/suppressed message length, so a pathological
+// throwable with a multi-MB message can't produce a giant event.
+constexpr size_t kMaxMessageLen = 4096;
+
 void clear_ex(JNIEnv* jni) {
     if (jni->ExceptionCheck()) jni->ExceptionClear();
+}
+
+void truncate_in_place(std::string& s, size_t max_len) {
+    if (s.size() > max_len) {
+        s.resize(max_len);
+        s += "...(truncated)";
+    }
 }
 
 std::string iso8601_now() {
@@ -71,6 +82,7 @@ std::string call_string_method(JNIEnv* jni, jobject obj, const char* method) {
     const char* utf = jni->GetStringUTFChars(s, nullptr);
     std::string out = utf ? utf : "";
     if (utf) jni->ReleaseStringUTFChars(s, utf);
+    truncate_in_place(out, kMaxMessageLen);
     return out;
 }
 
@@ -257,7 +269,7 @@ void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
         }
 
         if (d.mode == CaptureMode::FULL) {
-            ev.metrics = collect_jvm_metrics(jvmti, jni);
+            ev.metrics = collect_jvm_metrics_cached(jvmti, jni);
             ev.metrics_valid = true;
             StackWalker walker(jvmti, ctx->inspector.get(),
                                ctx->location_filter.get(), shadow);
@@ -265,7 +277,8 @@ void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
         } else if (d.mode == CaptureMode::REDUCED) {
             StackWalker walker(jvmti, ctx->inspector.get(),
                                ctx->location_filter.get(), shadow);
-            ev.stack = walker.walk(jni, thread, /*capture_locals=*/false);
+            ev.stack = walker.walk(jni, thread, /*capture_locals=*/false,
+                                   StackWalker::kReducedFrames);
         }
 
         print_console(ctx->config, ev);

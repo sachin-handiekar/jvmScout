@@ -11,9 +11,10 @@ import java.util.Arrays;
  * never break the host application.
  *
  * <p>Depth model: {@code getFrame(depth)} takes a <em>native stack depth</em>
- * (0 = current/top frame). The top frame (where exceptions originate and locals
- * matter most) is always read consistently; deeper frames are best-effort
- * because exception unwinding does not run the injected {@code exitMethod}.
+ * (0 = current/top frame). Both normal returns and exceptional unwinds run
+ * {@code exitMethod} (the transform wraps each instrumented body in a catch-all
+ * that pops and rethrows), so the depth counter stays balanced rather than
+ * ratcheting up across caught exceptions.
  */
 public final class __JvmtiShadow {
 

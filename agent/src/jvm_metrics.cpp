@@ -2,6 +2,9 @@
 
 #include "jvmti_utils.h"
 
+#include <chrono>
+#include <mutex>
+
 namespace {
 
 // Clear any pending JNI exception so a failed metric never poisons later calls.
@@ -120,4 +123,29 @@ JvmMetrics collect_jvm_metrics(jvmtiEnv* /*jvmti*/, JNIEnv* jni) {
     }
 
     return m;
+}
+
+JvmMetrics collect_jvm_metrics_cached(jvmtiEnv* jvmti, JNIEnv* jni, int64_t ttl_ms) {
+    static std::mutex mu;
+    static JvmMetrics cached;
+    static int64_t cached_at_ms = 0;
+    static bool have_cache = false;
+
+    const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        if (have_cache && now - cached_at_ms < ttl_ms) return cached;
+    }
+    // Collect outside the lock (JNI calls can be slow); a rare double-collect
+    // under contention is harmless.
+    JvmMetrics fresh = collect_jvm_metrics(jvmti, jni);
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        cached = fresh;
+        cached_at_ms = now;
+        have_cache = true;
+    }
+    return fresh;
 }

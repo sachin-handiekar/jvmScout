@@ -19,4 +19,10 @@ struct JvmMetrics {
 // beans). Best-effort: fields stay -1 when a bean is unavailable.
 JvmMetrics collect_jvm_metrics(jvmtiEnv* jvmti, JNIEnv* jni);
 
+// Process-wide TTL cache over collect_jvm_metrics. Metrics are coarse JVM-global
+// values, so a burst of FULL events within ttl_ms reuses one snapshot instead of
+// re-walking the MXBeans on every event.
+JvmMetrics collect_jvm_metrics_cached(jvmtiEnv* jvmti, JNIEnv* jni,
+                                      int64_t ttl_ms = 1000);
+
 #endif  // JVMTI_AGENT_JVM_METRICS_H

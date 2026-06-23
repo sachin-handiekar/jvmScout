@@ -1,28 +1,64 @@
 #include "json_utils.h"
 
+#include <cstdint>
 #include <cstdio>
 
+namespace {
+
+// Append one UTF-16 code unit to the output as JSON. Printable ASCII passes
+// through; everything else (controls, surrogates, BMP non-ASCII) is \u-escaped,
+// which keeps the output pure-ASCII and always valid JSON.
+void append_unit(std::string& out, uint32_t u) {
+    switch (u) {
+        case '"':  out += "\\\""; return;
+        case '\\': out += "\\\\"; return;
+        case '\b': out += "\\b";  return;
+        case '\f': out += "\\f";  return;
+        case '\n': out += "\\n";  return;
+        case '\r': out += "\\r";  return;
+        case '\t': out += "\\t";  return;
+    }
+    if (u >= 0x20 && u < 0x7F) {
+        out += static_cast<char>(u);
+        return;
+    }
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "\\u%04x", u & 0xFFFFu);
+    out += buf;
+}
+
+}  // namespace
+
+// Strings from JNI/JVMTI are *modified* UTF-8: an embedded NUL is 0xC0 0x80 and
+// supplementary characters are a surrogate pair, each encoded as a 3-byte form
+// (so no 4-byte sequences). Emitted verbatim those are invalid standard UTF-8
+// and break the collector's JSON decode. Decode to UTF-16 code units and emit
+// JSON \u escapes; surrogate halves naturally become a valid JSON pair. Invalid
+// bytes degrade to U+FFFD so the output is always well-formed.
 std::string JsonWriter::escape(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 8);
-    for (unsigned char c : s) {
-        switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\b': out += "\\b";  break;
-            case '\f': out += "\\f";  break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
-            default:
-                if (c < 0x20) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-                    out += buf;
-                } else {
-                    out += static_cast<char>(c);
-                }
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(s.data());
+    const size_t n = s.size();
+    size_t i = 0;
+    while (i < n) {
+        const unsigned char b0 = p[i];
+        uint32_t unit;
+        if (b0 < 0x80) {
+            unit = b0;
+            i += 1;
+        } else if ((b0 & 0xE0) == 0xC0 && i + 1 < n && (p[i + 1] & 0xC0) == 0x80) {
+            unit = ((b0 & 0x1Fu) << 6) | (p[i + 1] & 0x3Fu);
+            i += 2;
+        } else if ((b0 & 0xF0) == 0xE0 && i + 2 < n &&
+                   (p[i + 1] & 0xC0) == 0x80 && (p[i + 2] & 0xC0) == 0x80) {
+            unit = ((b0 & 0x0Fu) << 12) | ((p[i + 1] & 0x3Fu) << 6) | (p[i + 2] & 0x3Fu);
+            i += 3;
+        } else {
+            unit = 0xFFFD;  // invalid lead/continuation byte
+            i += 1;
         }
+        append_unit(out, unit);
     }
     return out;
 }

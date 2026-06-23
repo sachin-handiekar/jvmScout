@@ -76,6 +76,9 @@ AgentConfig parse_config(const char* options) {
             else if (key == "console") cfg.console = to_bool(val);
             else if (key == "depth") cfg.depth = std::atoi(val.c_str());
             else if (key == "timeout") cfg.timeout_ms = std::atoi(val.c_str());
+            else if (key == "https") cfg.https = to_bool(val);
+            else if (key == "tls_insecure") cfg.tls_insecure = to_bool(val);
+            else if (key == "api_key") cfg.api_key = val;
             else if (key == "deny") { for (auto& p : split(val, ';')) cfg.deny.push_back(p); }
             else if (key == "location_deny") { for (auto& p : split(val, ';')) cfg.location_deny.push_back(p); }
             else if (key == "capture_packages") cfg.capture_packages = split(val, ';');

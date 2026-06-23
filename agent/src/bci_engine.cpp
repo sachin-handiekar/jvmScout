@@ -24,6 +24,37 @@ std::string default_jar_path() {
     return dir + "bci-transform.jar";
 }
 
+// Normalize a user-supplied package pattern to the internal '/' form used for
+// class names in the load hook, so "com.example" and "com/example" both work.
+std::string to_slash(std::string s) {
+    for (char& c : s) {
+        if (c == '.') c = '/';
+    }
+    return s;
+}
+
+bool starts_with(const std::string& s, const std::string& prefix) {
+    return !prefix.empty() && s.rfind(prefix, 0) == 0;
+}
+
+// Apply the agent's configurable BCI scope (bci_exclude denylist + optional
+// bci_packages allowlist) to a class name (internal '/' form). The Java
+// transformer keeps its own JDK/framework exclude list as a safety baseline;
+// this is an additional, user-controlled filter. Default config (both empty)
+// instruments everything the transformer would.
+bool bci_in_scope(const AgentConfig& cfg, const std::string& name_slash) {
+    for (const std::string& ex : cfg.bci_exclude) {
+        if (starts_with(name_slash, to_slash(ex))) return false;
+    }
+    if (!cfg.bci_packages.empty()) {
+        for (const std::string& inc : cfg.bci_packages) {
+            if (starts_with(name_slash, to_slash(inc))) return true;
+        }
+        return false;  // allowlist mode: not matched -> skip
+    }
+    return true;
+}
+
 }  // namespace
 
 namespace bci_engine {
@@ -81,6 +112,14 @@ void on_class_file_load(AgentContext& ctx, jvmtiEnv* jvmti, JNIEnv* jni,
     if (!ctx.started || !ctx.bci_transformer_class || !ctx.bci_transform_method) return;
     if (t_in_transform) return;  // re-entrant load during transform: leave unchanged
     if (!name) return;
+
+    // Honor the configured BCI scope before paying the JNI/transform cost.
+    if (!bci_in_scope(ctx.config, name)) {
+        if (ctx.config.bci_verbose) {
+            std::fprintf(stdout, "[jvmti-agent] (bci) skipping out-of-scope %s\n", name);
+        }
+        return;
+    }
 
     t_in_transform = true;
     struct Guard { ~Guard() { t_in_transform = false; } } guard;
