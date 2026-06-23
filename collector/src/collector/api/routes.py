@@ -4,13 +4,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Optional
 
 from fastapi import (
     APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect,
 )
 
-from .. import storage
+from .. import redaction, storage
 from ..config import settings
 from ..models import AgentStartEvent, ExceptionEvent
 from ..security import authorize_websocket, client_key, rate_limiter, require_auth
@@ -53,6 +54,32 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+class _RedactionCache:
+    """Short-TTL cache of compiled redaction rules so ingest doesn't hit the DB
+    per event but still picks up UI rule changes within a few seconds."""
+
+    def __init__(self, ttl_s: float = 5.0) -> None:
+        self._ttl = ttl_s
+        self._at = 0.0
+        self._compiled = redaction.compile_rules([])
+
+    async def get(self) -> redaction.CompiledRules:
+        now = time.monotonic()
+        if now - self._at > self._ttl:
+            rules = await storage.list_config("redaction_rules")
+            self._compiled = redaction.compile_rules(rules)
+            self._at = now
+        return self._compiled
+
+    def reset(self) -> None:
+        """Force a reload on next get() (used for test isolation)."""
+        self._at = 0.0
+        self._compiled = redaction.compile_rules([])
+
+
+redaction_cache = _RedactionCache()
+
+
 @public_router.get("/healthz")
 async def healthz() -> dict:
     """Cheap liveness/readiness probe (no DB aggregation, no auth)."""
@@ -85,6 +112,7 @@ async def ingest(request: Request) -> dict:
 
     payload = await _read_json_body(request)
     items = payload if isinstance(payload, list) else [payload]
+    rules = await redaction_cache.get()
     accepted = 0
     failed = 0
     for raw in items:
@@ -97,6 +125,8 @@ async def ingest(request: Request) -> dict:
                 await storage.store_agent_start(ev, raw)
                 await manager.broadcast({"kind": "agent_start", "event": raw})
             else:
+                # Redact captured values before parsing/storing/broadcasting.
+                raw = redaction.redact_event(raw, rules)
                 ev = ExceptionEvent.model_validate(raw)
                 row_id = await storage.store_exception(ev, raw)
                 await manager.broadcast({"kind": "exception", "id": row_id, "event": raw})

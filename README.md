@@ -160,6 +160,16 @@ proxy in front of the collector.
   injects shadow-capture calls so the agent recovers local *values* by slot
   (`source: "bci_shadow"`); the UI marks these with a ● badge.
 
+## Redaction
+
+The agent already masks sensitive **system properties / env vars** by key
+(`redact_props`). In addition, the dashboard's **Redaction** screen manages rules
+the collector applies to **captured local-variable values** (and the exception
+message) on ingest — before anything is stored or broadcast:
+
+- **identifier** rules mask a local whose name matches (e.g. `password`, `token`);
+- **pattern** rules mask any value matching a regex (e.g. card numbers, JWTs).
+
 ## Verified
 
 Built and exercised on Windows with JDK 26, GCC (MinGW-w64) + CMake/Ninja, and

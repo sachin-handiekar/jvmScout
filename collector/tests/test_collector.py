@@ -120,6 +120,61 @@ def test_delete_all_requires_confirm(client):
     assert client.get("/exceptions", headers=AUTH).json()["total"] == 0
 
 
+# --- redaction -------------------------------------------------------------
+
+def _frame_with_locals(locals_):
+    return [{
+        "frameIndex": 0, "className": "C", "methodName": "m", "lineNumber": 1,
+        "isAppCode": True, "localVariables": locals_,
+    }]
+
+
+def test_redaction_identifier_masks_local(client):
+    client.post("/config/redaction_rules",
+                json={"kind": "identifier", "name": "pw", "value": "password", "enabled": True},
+                headers=AUTH)
+    ev = exception_event(stackTrace=_frame_with_locals([
+        {"name": "password", "value": "hunter2", "slot": 0, "source": "debug_info"},
+        {"name": "user", "value": "alice", "slot": 1, "source": "debug_info"},
+    ]))
+    client.post("/collector", json=ev, headers=AUTH)
+    exc_id = client.get("/exceptions", headers=AUTH).json()["items"][0]["id"]
+    detail = client.get(f"/exceptions/{exc_id}", headers=AUTH).json()
+    by_name = {lv["name"]: lv["value"] for lv in detail["stackTrace"][0]["localVariables"]}
+    assert by_name["password"] == "***"
+    assert by_name["user"] == "alice"
+
+
+def test_redaction_pattern_masks_value_and_message(client):
+    client.post("/config/redaction_rules",
+                json={"kind": "pattern", "name": "card",
+                      "value": r"\d{4}-\d{4}-\d{4}-\d{4}", "enabled": True},
+                headers=AUTH)
+    ev = exception_event(
+        exceptionMessage="card 1234-5678-9012-3456 leaked",
+        stackTrace=_frame_with_locals([
+            {"name": "cc", "value": "1234-5678-9012-3456", "slot": 0, "source": "debug_info"},
+        ]))
+    client.post("/collector", json=ev, headers=AUTH)
+    exc_id = client.get("/exceptions", headers=AUTH).json()["items"][0]["id"]
+    detail = client.get(f"/exceptions/{exc_id}", headers=AUTH).json()
+    assert detail["stackTrace"][0]["localVariables"][0]["value"] == "***"
+    assert detail["exceptionMessage"] == "***"
+
+
+def test_redaction_disabled_rule_is_ignored(client):
+    client.post("/config/redaction_rules",
+                json={"kind": "identifier", "name": "pw", "value": "password", "enabled": False},
+                headers=AUTH)
+    ev = exception_event(stackTrace=_frame_with_locals([
+        {"name": "password", "value": "hunter2", "slot": 0, "source": "debug_info"},
+    ]))
+    client.post("/collector", json=ev, headers=AUTH)
+    exc_id = client.get("/exceptions", headers=AUTH).json()["items"][0]["id"]
+    detail = client.get(f"/exceptions/{exc_id}", headers=AUTH).json()
+    assert detail["stackTrace"][0]["localVariables"][0]["value"] == "hunter2"
+
+
 # --- timeseries ------------------------------------------------------------
 
 def test_timeseries_buckets_and_counts(client):

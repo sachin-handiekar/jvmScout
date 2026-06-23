@@ -40,15 +40,18 @@ def run_async(coro):
 
 @pytest.fixture(autouse=True)
 def _clean_tables(client):
-    """Wipe both tables before each test for isolation."""
+    """Wipe tables + reset the redaction cache before each test for isolation."""
     async def _wipe():
         from sqlalchemy import delete
         async with storage.session() as s:
             await s.execute(delete(storage.ExceptionRow))
             await s.execute(delete(storage.JvmInstanceRow))
+            await s.execute(delete(storage.ConfigEntityRow))
             await s.commit()
 
     run_async(_wipe())
+    from collector.api import routes
+    routes.redaction_cache.reset()
     yield
 
 
