@@ -1,0 +1,26 @@
+# Keep the build context small and free of host-specific build output.
+.git
+.github
+agent/build
+**/target
+**/__pycache__
+**/*.pyc
+collector/.venv
+collector/*.db
+collector/*.db-*
+
+# Frontend: ship source to the Docker build (it builds fresh in stage 1), but
+# never the host's installed deps or build output.
+node_modules
+**/node_modules
+frontend/dist
+frontend/.output
+frontend/.nitro
+frontend/.tanstack
+*.dll
+*.so
+*.dylib
+*.obj
+*.o
+.idea
+.vscode

@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Native JVMTI agent: build the shared library on all three target OSes.
+  # ---------------------------------------------------------------------------
+  agent:
+    name: agent (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 24 (provides JAVA_HOME for JNI/JVMTI headers)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "24"
+
+      - name: Install libcurl (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+
+      - name: Configure
+        run: cmake -S agent -B agent/build
+
+      - name: Build
+        run: cmake --build agent/build --config Release
+
+      - name: Show built library
+        shell: bash
+        run: |
+          echo "Artifacts in agent/build:"
+          find agent/build -maxdepth 2 \( -name '*.dll' -o -name '*.so' -o -name '*.dylib' \) -print
+
+      - name: Upload agent library
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-${{ matrix.os }}
+          path: |
+            agent/build/**/*.dll
+            agent/build/**/*.so
+            agent/build/**/*.dylib
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # BCI transformer jar (java.lang.classfile, JDK 24+).
+  # ---------------------------------------------------------------------------
+  bci:
+    name: bci-transformer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "24"
+      - name: Build bci-transform.jar
+        run: |
+          cd bci-classfile
+          javac -d out src/main/java/*.java
+          jar cf bci-transform.jar -C out .
+          ls -l bci-transform.jar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bci-transform-jar
+          path: bci-classfile/bci-transform.jar
+
+  # ---------------------------------------------------------------------------
+  # Python collector: install, byte-compile, and smoke-test the HTTP server.
+  # ---------------------------------------------------------------------------
+  collector:
+    name: collector (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r collector/requirements-dev.txt
+      - name: Byte-compile
+        run: python -m compileall collector/src
+      - name: Unit tests
+        run: |
+          cd collector
+          PYTHONPATH=src python -m pytest
+      - name: Smoke test (start server, hit /healthz)
+        env:
+          PYTHONPATH: collector/src
+          COLLECTOR_DB_URL: "sqlite+aiosqlite:///./ci.db"
+        run: |
+          python -m collector &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz >/dev/null; then
+              echo "collector is up"; break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/healthz
+          kill $SERVER_PID
+
+  # ---------------------------------------------------------------------------
+  # React dashboard: typecheck + build the static SPA the collector serves.
+  # (Lint is intentionally not gated here — the generated UI is not yet
+  # prettier/eslint-clean; typecheck + build are the meaningful gates.)
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: frontend (dashboard)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # --legacy-peer-deps: the Lovable stack pins some peers ahead of their
+      # ecosystem (React 19 / zod 4 / vite 8).
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Build SPA
+        run: npm run build
+      - name: Upload dashboard build
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-dist
+          path: frontend/dist/client
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Docker image: validates the multi-stage build (frontend SPA + collector).
+  # ---------------------------------------------------------------------------
+  docker:
+    name: docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build collector image
+        run: docker build -f collector/Dockerfile -t jvmscout-collector:ci .

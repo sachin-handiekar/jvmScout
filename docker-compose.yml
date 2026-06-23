@@ -1,0 +1,21 @@
+# jvmScout collector + dashboard.
+#   docker compose up
+# Then open http://localhost:8080 and point agents at host=<this-host>,port=8080.
+services:
+  collector:
+    build:
+      context: .
+      dockerfile: collector/Dockerfile
+    image: jvmscout-collector:latest
+    container_name: jvmscout-collector
+    ports:
+      - "8080:8080"
+    environment:
+      COLLECTOR_RETENTION_DAYS: "30"
+      # COLLECTOR_DB_URL is set in the image to point at the persistent volume.
+    volumes:
+      - jvmscout-data:/data
+    restart: unless-stopped
+
+volumes:
+  jvmscout-data:
