@@ -12,6 +12,7 @@ struct AgentConfig {
     int port = 8080;
     std::string path = "/collector";
     std::string deployment;
+    std::string environment;  // e.g. production/staging/development (UI grouping)
     bool console = true;
     int depth = 3;            // object-inspection recursion depth
     int timeout_ms = 5000;    // HTTP timeout

@@ -112,6 +112,7 @@ class AgentStartEvent(_Wire):
     timestamp: Optional[str] = None
     instance_id: Optional[str] = None
     deployment_id: Optional[str] = None
+    environment: Optional[str] = None
     jvm_info: Optional[JvmInfo] = None
     host_info: Optional[HostInfo] = None
     jvm_args: List[str] = []

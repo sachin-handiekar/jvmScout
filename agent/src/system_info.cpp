@@ -114,6 +114,7 @@ std::string build_agent_start_event(AgentContext& ctx, jvmtiEnv* /*jvmti*/,
     w.field("timestamp", iso_now());
     w.field("instanceId", cfg.instance_id);
     w.field("deploymentId", cfg.deployment);
+    w.field("environment", cfg.environment);
 
     w.key("jvmInfo").begin_object();
     w.field("version", get_property(jni, "java.version"));

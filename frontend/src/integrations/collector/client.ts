@@ -242,23 +242,34 @@ export interface ApplicationRow {
   created_at: string;
 }
 
+function normalizeEnvironment(raw: unknown): ApplicationRow["environment"] {
+  const v = String(raw ?? "").toLowerCase();
+  if (v === "staging" || v === "stage" || v === "stg") return "staging";
+  if (v === "development" || v === "dev" || v === "local") return "development";
+  return "production"; // default + explicit "production"/"prod"/unknown
+}
+
 export async function deriveApplications(): Promise<ApplicationRow[]> {
   const [rows, instances] = await Promise.all([fetchAllExceptions(), fetchInstances()]);
   const ids = new Set<string>();
-  let earliest: Record<string, string> = {};
+  const earliest: Record<string, string> = {};
   for (const r of rows) {
     const id = r.deployment_id ?? UNKNOWN_APP;
     ids.add(id);
     const t = tsOf(r);
     if (!earliest[id] || t < earliest[id]) earliest[id] = t;
   }
+  // Environment is reported on agent_start (per instance); map it per deployment.
+  const envByApp: Record<string, ApplicationRow["environment"]> = {};
   for (const inst of instances) {
-    ids.add(inst.deploymentId ?? inst.deployment_id ?? UNKNOWN_APP);
+    const id = inst.deploymentId ?? inst.deployment_id ?? UNKNOWN_APP;
+    ids.add(id);
+    if (inst.environment) envByApp[id] = normalizeEnvironment(inst.environment);
   }
   return Array.from(ids).map((id) => ({
     id,
     name: id,
-    environment: "production" as const,
+    environment: envByApp[id] ?? "production",
     created_at: earliest[id] ?? new Date().toISOString(),
   }));
 }

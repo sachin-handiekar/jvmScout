@@ -73,6 +73,7 @@ AgentConfig parse_config(const char* options) {
             else if (key == "port") cfg.port = std::atoi(val.c_str());
             else if (key == "path") cfg.path = val;
             else if (key == "deployment") cfg.deployment = val;
+            else if (key == "environment") cfg.environment = val;
             else if (key == "console") cfg.console = to_bool(val);
             else if (key == "depth") cfg.depth = std::atoi(val.c_str());
             else if (key == "timeout") cfg.timeout_ms = std::atoi(val.c_str());

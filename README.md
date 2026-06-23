@@ -113,6 +113,7 @@ Passed as `-agentpath:<library>=key=val,key=val,...`
 | `tls_insecure` | `false` | Skip certificate verification (testing/self-signed only) |
 | `api_key` | (empty) | Sent as `Authorization: Bearer <key>`; must match the collector's `COLLECTOR_API_KEY` |
 | `deployment` | (empty) | Deployment tag on every event |
+| `environment` | (empty) | Environment tag (`production`/`staging`/`development`) reported at startup; drives the dashboard's environment switcher (defaults to `production`) |
 | `console` | `true` | Print captured exceptions to stdout |
 | `depth` | `3` | Array-nesting depth when rendering captured values (object arrays recurse up to this depth; primitive arrays show `kind[len]`). Plain object fields are summarized as `type@hash`. |
 | `timeout` | `5000` | HTTP timeout (ms) |
