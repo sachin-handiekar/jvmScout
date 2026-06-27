@@ -477,14 +477,27 @@ export async function configDelete(table: string, id: string): Promise<void> {
   await http(`/config/${table}/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-/** Issue an API token server-side; the raw token is returned exactly once. */
+/** Issue an API token server-side; the raw token is returned exactly once. The
+ * token is bound to a project and a role (ingest | viewer | admin). */
 export async function createApiToken(
   name: string,
-): Promise<{ token: string; token_prefix: string; id: string; name: string }> {
+  opts?: { project_id?: string; role?: string },
+): Promise<{
+  token: string;
+  token_prefix: string;
+  id: string;
+  name: string;
+  project_id: string;
+  role: string;
+}> {
   return http(`/tokens`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({
+      name,
+      project_id: opts?.project_id || undefined,
+      role: opts?.role || undefined,
+    }),
   });
 }
 

@@ -564,6 +564,9 @@ function RuleList({
 
 // ============= Tab 4: API Tokens =============
 
+const TOKEN_ROLES = ["ingest", "viewer", "admin"] as const;
+type TokenRole = (typeof TOKEN_ROLES)[number];
+
 function TokensTab() {
   const qc = useQueryClient();
   const { data: tokens, isLoading } = useQuery({
@@ -579,12 +582,17 @@ function TokensTab() {
   });
 
   const [name, setName] = useState("");
+  const [project, setProject] = useState("default");
+  const [role, setRole] = useState<TokenRole>("ingest");
   const [newToken, setNewToken] = useState<string | null>(null);
 
   const generate = useMutation({
     mutationFn: async () => {
       // Token is generated and hashed server-side; the raw value is returned once.
-      const res = await createApiToken(name || "Untitled token");
+      const res = await createApiToken(name || "Untitled token", {
+        project_id: project.trim() || "default",
+        role,
+      });
       return res.token;
     },
     onSuccess: (raw) => {
@@ -611,13 +619,43 @@ function TokensTab() {
   return (
     <div className="space-y-4">
       <Card>
-        <SectionHeader title="Create token" hint="Used by the collector to send events. Shown once — store it securely." />
-        <div className="flex gap-2">
-          <Input
-            placeholder="e.g. prod-collector-eu-west-1"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
+        <SectionHeader
+          title="Create token"
+          hint="Bound to a project + role. ingest = agents (send only), viewer = read-only dashboard, admin = manage. Shown once — store it securely."
+        />
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="min-w-[180px] flex-1 space-y-1">
+            <Label className="text-[11px] text-muted-foreground">Name</Label>
+            <Input
+              placeholder="e.g. payments-agent"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div className="w-40 space-y-1">
+            <Label className="text-[11px] text-muted-foreground">Project</Label>
+            <Input
+              placeholder="default"
+              value={project}
+              onChange={(e) => setProject(e.target.value)}
+              className="font-mono"
+            />
+          </div>
+          <div className="w-32 space-y-1">
+            <Label className="text-[11px] text-muted-foreground">Role</Label>
+            <Select value={role} onValueChange={(v) => setRole(v as TokenRole)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TOKEN_ROLES.map((r) => (
+                  <SelectItem key={r} value={r}>
+                    {r}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <Button onClick={() => generate.mutate()} disabled={generate.isPending}>
             <Plus className="h-3.5 w-3.5" /> <span className="ml-1.5">Generate</span>
           </Button>
@@ -659,10 +697,15 @@ function TokensTab() {
                         </span>
                       )}
                     </div>
-                    <div className="mt-0.5 flex items-center gap-3 text-[11px] text-muted-foreground">
+                    <div className="mt-0.5 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
                       <span className="font-mono">{t.token_prefix}…</span>
+                      <span className="rounded border border-border px-1.5 py-px font-mono">
+                        {t.project_id || "default"}
+                      </span>
+                      <span className="rounded border border-border px-1.5 py-px uppercase tracking-wide">
+                        {t.role || "ingest"}
+                      </span>
                       <span>Created {relativeTime(t.created_at)}</span>
-                      <span>Last used {t.last_used_at ? relativeTime(t.last_used_at) : "never"}</span>
                     </div>
                   </div>
                   {!revoked && (

@@ -80,8 +80,9 @@ Detailed status lives in the working notes; headline remaining items:
 - **Security:** mostly done — CSP header on the SPA; dependency scanning
   (pip-audit / npm audit) in CI; multi-tenant **project + role** token scoping
   (ingest/viewer/admin) on data, live updates, **and** alert/redaction/config
-  rules. Remaining: a UI for managing projects / minting scoped tokens with a
-  role + project picker (the API supports it today).
+  rules; the dashboard Tokens screen mints scoped tokens (project + role).
+  Remaining (optional): a projects registry UI + a project switcher so the
+  master key can filter the view to one tenant.
 - **Agent:** done — JNI local-ref audit + per-frame bounding; collector-down
   stress tests. Remaining: the libcurl/POSIX transport is CI-built but not yet
   run end-to-end on Linux/macOS.

@@ -18,6 +18,9 @@ GitHub Release assets.
   `POST /tokens` takes `project_id` + `role`; the master `COLLECTOR_API_KEY` is a
   superadmin that sees all projects. Adds a `project_id` column (Alembic
   `0002_project_id`).
+- Dashboard Tokens screen can now mint **scoped tokens**: pick a project and a
+  role (ingest / viewer / admin) when generating a token, and the token list
+  shows each token's project and role.
 - Per-project config: alert rules, redaction rules, and other UI-managed config
   are now scoped to a project (Alembic `0003_config_project_id`). An admin
   manages only their project's rules and they apply only to that project's
