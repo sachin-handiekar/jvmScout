@@ -87,7 +87,10 @@ if(AGENT_BUILD_TESTS)
     src/sampling.cpp
     src/json_utils.cpp
     src/config.cpp
+    src/async_queue.cpp
   )
   target_include_directories(agent_tests PRIVATE include)
+  find_package(Threads REQUIRED)
+  target_link_libraries(agent_tests PRIVATE Threads::Threads)
   add_test(NAME agent_tests COMMAND agent_tests)
 endif()

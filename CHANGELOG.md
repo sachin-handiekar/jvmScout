@@ -42,6 +42,12 @@ GitHub Release assets.
   removed for honesty.
 
 ### Fixed
+- JNI local-reference discipline in the exception callback: the stack walker now
+  bounds references per frame (and releases each declaring-class ref), and the
+  message/cause/suppressed helpers release their `GetObjectClass` refs. Deep
+  stacks (up to 100 frames) previously accumulated ~one local ref per frame
+  inside the callback's reserved frame, which could exceed its capacity under
+  sustained volume (and trip `-Xcheck:jni`).
 - BCI shadow-frame depth-counter leak on exceptional unwind (catch-all pop).
 - Modified-UTF-8 from JNI now serialized as valid JSON (`\u` escapes), fixing
   non-ASCII / supplementary-character payloads.

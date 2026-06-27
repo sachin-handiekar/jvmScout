@@ -76,6 +76,7 @@ std::string call_string_method(JNIEnv* jni, jobject obj, const char* method) {
     if (!obj) return "";
     jclass cls = jni->GetObjectClass(obj);
     jmethodID mid = jni->GetMethodID(cls, method, "()Ljava/lang/String;");
+    jni->DeleteLocalRef(cls);
     if (!mid) { clear_ex(jni); return ""; }
     jstring s = static_cast<jstring>(jni->CallObjectMethod(obj, mid));
     if (jni->ExceptionCheck() || !s) { clear_ex(jni); return ""; }
@@ -91,6 +92,7 @@ jobject call_object_method(JNIEnv* jni, jobject obj, const char* method,
     if (!obj) return nullptr;
     jclass cls = jni->GetObjectClass(obj);
     jmethodID mid = jni->GetMethodID(cls, method, sig);
+    jni->DeleteLocalRef(cls);
     if (!mid) { clear_ex(jni); return nullptr; }
     jobject r = jni->CallObjectMethod(obj, mid);
     if (jni->ExceptionCheck()) { clear_ex(jni); return nullptr; }
@@ -99,7 +101,9 @@ jobject call_object_method(JNIEnv* jni, jobject obj, const char* method,
 
 std::string exception_type_slash(jvmtiEnv* jvmti, JNIEnv* jni, jobject ex) {
     jclass exc = jni->GetObjectClass(ex);
-    return class_signature_slash(jvmti, exc);
+    std::string out = class_signature_slash(jvmti, exc);
+    if (exc) jni->DeleteLocalRef(exc);
+    return out;
 }
 
 void fill_cause_chain(jvmtiEnv* jvmti, JNIEnv* jni, jobject ex,
@@ -148,7 +152,8 @@ void fill_thread_info(jvmtiEnv* jvmti, jthread thread, ThreadDetails& td) {
     if (info.name) jvmti->Deallocate(reinterpret_cast<unsigned char*>(info.name));
 }
 
-Location location_from_method(jvmtiEnv* jvmti, jmethodID method, jlocation loc) {
+Location location_from_method(jvmtiEnv* jvmti, JNIEnv* jni, jmethodID method,
+                              jlocation loc) {
     Location l;
     char* mname = nullptr;
     if (jvmti->GetMethodName(method, &mname, nullptr, nullptr) == JVMTI_ERROR_NONE) {
@@ -167,6 +172,7 @@ Location location_from_method(jvmtiEnv* jvmti, jmethodID method, jlocation loc) 
             JvmtiString freeSrc(jvmti, src);
             l.source_file = src ? src : "";
         }
+        jni->DeleteLocalRef(decl);
     }
     l.line_number = resolve_line_number(jvmti, method, loc);
     l.valid = true;
@@ -222,6 +228,7 @@ void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
         std::string throw_class_slash;
         if (jvmti->GetMethodDeclaringClass(method, &decl) == JVMTI_ERROR_NONE) {
             throw_class_slash = class_signature_slash(jvmti, decl);
+            if (decl) jni->DeleteLocalRef(decl);
         }
         if (ctx->location_filter && !ctx->location_filter->accept(throw_class_slash)) {
             return;
@@ -252,9 +259,9 @@ void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
         ev.exception_type = ex_type;
         ev.exception_message = call_string_method(jni, exception, "getMessage");
         ev.caught = (catch_method != nullptr);
-        ev.location = location_from_method(jvmti, method, location);
+        ev.location = location_from_method(jvmti, jni, method, location);
         if (catch_method) {
-            ev.caught_at = location_from_method(jvmti, catch_method, catch_location);
+            ev.caught_at = location_from_method(jvmti, jni, catch_method, catch_location);
         }
         fill_thread_info(jvmti, thread, ev.thread);
 

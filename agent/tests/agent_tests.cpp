@@ -4,14 +4,20 @@
 //
 // Built as the `agent_tests` CMake target and run via ctest.
 
+#include "async_queue.h"
 #include "config.h"
 #include "fingerprint.h"
 #include "ifilter.h"
+#include "itransport.h"
 #include "json_utils.h"
 #include "sampling.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <functional>
 #include <string>
+#include <thread>
 
 static int g_fail = 0;
 
@@ -117,6 +123,76 @@ static void test_redact_matches() {
     CHECK(redact_matches({}, "password") == false);        // no patterns -> never redact
 }
 
+// --- async queue / collector-down behavior --------------------------------
+
+// Controllable in-memory transport. `up` toggles collector availability;
+// `delivered` counts events in successfully-sent batches (each test event is
+// the single token "x", so the count is the number of 'x' bytes in the body).
+class FakeTransport : public ITransport {
+public:
+    std::atomic<bool> up{true};
+    std::atomic<int> send_calls{0};
+    std::atomic<int> delivered{0};
+    bool send(const std::string& body) override {
+        send_calls.fetch_add(1, std::memory_order_relaxed);
+        if (!up.load()) return false;
+        int n = 0;
+        for (char c : body) if (c == 'x') ++n;
+        delivered.fetch_add(n, std::memory_order_relaxed);
+        return true;
+    }
+    const char* name() const override { return "fake"; }
+};
+
+static void poll_until(const std::function<bool()>& done, int max_ms) {
+    for (int waited = 0; waited < max_ms && !done(); waited += 10)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}
+
+// Producer never blocks on I/O; at capacity events are dropped and counted.
+static void test_async_queue_bounded_drops() {
+    FakeTransport t;
+    AsyncQueue q(&t, "test");  // worker intentionally NOT started -> nothing drains
+    size_t ok = 0;
+    for (size_t i = 0; i < AsyncQueue::kMaxQueue + 100; ++i)
+        if (q.enqueue("x")) ++ok;
+    CHECK(ok == AsyncQueue::kMaxQueue);       // bounded at capacity
+    CHECK(q.dropped() == 100);                // overflow is counted, not lost silently
+    CHECK(t.send_calls.load() == 0);          // no worker -> no I/O attempted
+}
+
+// Collector down: the throwing thread keeps running (enqueue returns fast) and
+// the worker retries without dropping anything while under capacity.
+static void test_async_queue_no_drop_during_outage() {
+    FakeTransport t;
+    t.up = false;  // collector unreachable
+    AsyncQueue q(&t, "test");
+    q.start();
+
+    const int N = 50;  // well under kMaxQueue
+    for (int i = 0; i < N; ++i) CHECK(q.enqueue("x"));  // none of these block
+
+    poll_until([&] { return t.send_calls.load() >= 1; }, 3000);
+    CHECK(t.send_calls.load() >= 1);  // worker attempted delivery
+    CHECK(q.dropped() == 0);          // under capacity -> requeued, not dropped
+    q.stop();
+}
+
+// Collector up: enqueued events are batched and delivered, none dropped.
+static void test_async_queue_delivers_when_up() {
+    FakeTransport t;  // up by default
+    AsyncQueue q(&t, "test");
+    q.start();
+
+    const int N = AsyncQueue::kBatchSize;  // exactly one batch -> immediate flush
+    for (int i = 0; i < N; ++i) CHECK(q.enqueue("x"));
+
+    poll_until([&] { return t.delivered.load() >= N; }, 5000);
+    CHECK(t.delivered.load() == N);
+    CHECK(q.dropped() == 0);
+    q.stop();
+}
+
 int main() {
     test_fingerprint();
     test_filters();
@@ -125,6 +201,9 @@ int main() {
     test_json_escape();
     test_config_parse();
     test_redact_matches();
+    test_async_queue_bounded_drops();
+    test_async_queue_no_drop_during_outage();
+    test_async_queue_delivers_when_up();
     if (g_fail == 0) std::printf("ALL %s\n", "PASS");
     else std::printf("%d CHECK(S) FAILED\n", g_fail);
     return g_fail ? 1 : 0;

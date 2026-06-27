@@ -140,6 +140,14 @@ std::vector<StackFrame> StackWalker::walk(JNIEnv* jni, jthread thread,
     }
 
     for (jint i = 0; i < count; ++i) {
+        // Bound the JNI local references created per frame: GetMethodDeclaringClass
+        // and the per-local GetLocalObject calls each yield a local ref. Without a
+        // per-frame frame these accumulate across all (up to kMaxFrames=100) frames
+        // within the caller's single PushLocalFrame, which on deep stacks can exceed
+        // its reserved capacity (and trips -Xcheck:jni). Only std::string data
+        // escapes each frame, so popping here is safe.
+        JniLocalFrame frameRefs(jni, 16);
+
         StackFrame frame;
         frame.frame_index = i;
 
@@ -165,6 +173,7 @@ std::vector<StackFrame> StackWalker::walk(JNIEnv* jni, jthread thread,
                 JvmtiString freeSrc(jvmti_, src);
                 frame.source_file = src ? src : "";
             }
+            jni->DeleteLocalRef(decl);
         }
         frame.class_name = signature_to_dotted(class_sig);
         frame.line_number = resolve_line_number(jvmti_, method, info[i].location);
