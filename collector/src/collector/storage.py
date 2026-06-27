@@ -28,6 +28,9 @@ class ExceptionRow(Base):
     fingerprint: Mapped[str] = mapped_column(String(64), index=True)
     capture_mode: Mapped[Optional[str]] = mapped_column(String(16))
     hit_count: Mapped[int] = mapped_column(Integer, default=1)
+    # Tenant the event belongs to, derived authoritatively from the ingest token
+    # (NULL for events ingested with the master key / when auth is disabled).
+    project_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     deployment_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
     environment: Mapped[Optional[str]] = mapped_column(String(32), index=True)
     instance_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
@@ -49,6 +52,7 @@ class JvmInstanceRow(Base):
     received_at: Mapped[str] = mapped_column(String(32))
     timestamp: Mapped[Optional[str]] = mapped_column(String(32))
     instance_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    project_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     deployment_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
     host_name: Mapped[Optional[str]] = mapped_column(String(256))
     jvm_version: Mapped[Optional[str]] = mapped_column(String(64))
@@ -93,6 +97,14 @@ def _env_clause(environment: str):
     return ExceptionRow.environment == environment
 
 
+def _apply_project(q, project_id: Optional[str], column):
+    """Restrict a query to a tenant. ``project_id is None`` means 'no scoping'
+    (the master key / superadmin sees every project)."""
+    if project_id is None:
+        return q
+    return q.where(column == project_id)
+
+
 async def init_db() -> None:
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -102,7 +114,8 @@ def session() -> AsyncSession:
     return _Session()
 
 
-async def store_exception(ev: ExceptionEvent, raw: dict[str, Any]) -> int:
+async def store_exception(ev: ExceptionEvent, raw: dict[str, Any],
+                          project_id: Optional[str] = None) -> int:
     loc = ev.location
     row = ExceptionRow(
         received_at=_now_iso(),
@@ -110,6 +123,7 @@ async def store_exception(ev: ExceptionEvent, raw: dict[str, Any]) -> int:
         fingerprint=ev.fingerprint,
         capture_mode=ev.capture_mode,
         hit_count=ev.hit_count or 1,
+        project_id=project_id,
         deployment_id=ev.deployment_id,
         environment=ev.environment,
         instance_id=ev.instance_id,
@@ -129,7 +143,8 @@ async def store_exception(ev: ExceptionEvent, raw: dict[str, Any]) -> int:
         return row.id
 
 
-async def store_agent_start(ev: AgentStartEvent, raw: dict[str, Any]) -> None:
+async def store_agent_start(ev: AgentStartEvent, raw: dict[str, Any],
+                            project_id: Optional[str] = None) -> None:
     host = ev.host_info
     jvm = ev.jvm_info
     async with session() as s:
@@ -139,11 +154,13 @@ async def store_agent_start(ev: AgentStartEvent, raw: dict[str, Any]) -> None:
         if existing:
             existing.raw_json = json.dumps(raw)
             existing.timestamp = ev.timestamp
+            existing.project_id = project_id
         else:
             s.add(JvmInstanceRow(
                 received_at=_now_iso(),
                 timestamp=ev.timestamp,
                 instance_id=ev.instance_id or "",
+                project_id=project_id,
                 deployment_id=ev.deployment_id,
                 host_name=host.name if host else None,
                 jvm_version=jvm.version if jvm else None,
@@ -158,7 +175,8 @@ async def store_agent_start(ev: AgentStartEvent, raw: dict[str, Any]) -> None:
 async def list_exceptions(*, limit: int, offset: int, exception_type: Optional[str],
                           deployment_id: Optional[str], caught: Optional[bool],
                           fingerprint: Optional[str],
-                          environment: Optional[str] = None) -> tuple[list[dict], int]:
+                          environment: Optional[str] = None,
+                          project_id: Optional[str] = None) -> tuple[list[dict], int]:
     cols = (
         ExceptionRow.id, ExceptionRow.received_at, ExceptionRow.timestamp,
         ExceptionRow.fingerprint, ExceptionRow.capture_mode, ExceptionRow.hit_count,
@@ -169,6 +187,8 @@ async def list_exceptions(*, limit: int, offset: int, exception_type: Optional[s
     )
     q = select(*cols).order_by(ExceptionRow.id.desc())
     cq = select(func.count()).select_from(ExceptionRow)
+    q = _apply_project(q, project_id, ExceptionRow.project_id)
+    cq = _apply_project(cq, project_id, ExceptionRow.project_id)
     if exception_type:
         q = q.where(ExceptionRow.exception_type == exception_type)
         cq = cq.where(ExceptionRow.exception_type == exception_type)
@@ -193,53 +213,62 @@ async def list_exceptions(*, limit: int, offset: int, exception_type: Optional[s
     return [dict(r) for r in rows], total
 
 
-async def get_exception(exc_id: int) -> Optional[dict]:
+async def get_exception(exc_id: int, project_id: Optional[str] = None) -> Optional[dict]:
     async with session() as s:
         row = await s.get(ExceptionRow, exc_id)
         if not row:
             return None
+        # Tenant isolation: a scoped caller can't read another project's row.
+        if project_id is not None and row.project_id != project_id:
+            return None
         return json.loads(row.raw_json)
 
 
-async def delete_exception(exc_id: int) -> bool:
+async def delete_exception(exc_id: int, project_id: Optional[str] = None) -> bool:
     async with session() as s:
         row = await s.get(ExceptionRow, exc_id)
         if not row:
+            return False
+        if project_id is not None and row.project_id != project_id:
             return False
         await s.delete(row)
         await s.commit()
         return True
 
 
-async def delete_all_exceptions() -> int:
+async def delete_all_exceptions(project_id: Optional[str] = None) -> int:
     async with session() as s:
-        result = await s.execute(delete(ExceptionRow))
+        stmt = _apply_project(delete(ExceptionRow), project_id, ExceptionRow.project_id)
+        result = await s.execute(stmt)
         await s.commit()
         return result.rowcount or 0
 
 
-async def stats() -> dict:
-    async with session() as s:
-        total = await s.scalar(select(func.count()).select_from(ExceptionRow)) or 0
-        unique = await s.scalar(
-            select(func.count(func.distinct(ExceptionRow.fingerprint)))) or 0
-        uncaught = await s.scalar(
-            select(func.count()).select_from(ExceptionRow).where(ExceptionRow.caught.is_(False))) or 0
-        deployments = await s.scalar(
-            select(func.count(func.distinct(ExceptionRow.deployment_id)))) or 0
+async def stats(project_id: Optional[str] = None) -> dict:
+    def scoped(q):
+        return _apply_project(q, project_id, ExceptionRow.project_id)
 
-        top_rows = (await s.execute(
+    async with session() as s:
+        total = await s.scalar(scoped(select(func.count()).select_from(ExceptionRow))) or 0
+        unique = await s.scalar(scoped(
+            select(func.count(func.distinct(ExceptionRow.fingerprint))))) or 0
+        uncaught = await s.scalar(scoped(
+            select(func.count()).select_from(ExceptionRow).where(ExceptionRow.caught.is_(False)))) or 0
+        deployments = await s.scalar(scoped(
+            select(func.count(func.distinct(ExceptionRow.deployment_id))))) or 0
+
+        top_rows = (await s.execute(scoped(
             select(ExceptionRow.exception_type, func.count().label("c"))
             .group_by(ExceptionRow.exception_type)
             .order_by(func.count().desc())
             .limit(10)
-        )).all()
-        recent_dep = (await s.execute(
+        ))).all()
+        recent_dep = (await s.execute(_apply_project(
             select(JvmInstanceRow.deployment_id, func.max(JvmInstanceRow.received_at))
             .group_by(JvmInstanceRow.deployment_id)
             .order_by(func.max(JvmInstanceRow.received_at).desc())
-            .limit(10)
-        )).all()
+            .limit(10), project_id, JvmInstanceRow.project_id
+        ))).all()
     return {
         "totalExceptions": total,
         "uniqueFingerprints": unique,
@@ -253,7 +282,8 @@ async def stats() -> dict:
 
 
 async def timeseries(*, hours: int, buckets: int,
-                     environment: Optional[str] = None) -> dict:
+                     environment: Optional[str] = None,
+                     project_id: Optional[str] = None) -> dict:
     """Bucket exception counts over the last `hours` into `buckets` slots,
     split by caught vs uncaught. Buckets by collector receive time."""
     now = datetime.now(timezone.utc)
@@ -266,6 +296,7 @@ async def timeseries(*, hours: int, buckets: int,
         ExceptionRow.received_at >= start_iso)
     if environment:
         q = q.where(_env_clause(environment))
+    q = _apply_project(q, project_id, ExceptionRow.project_id)
 
     series = [
         {"t": int((start_ts + i * bucket_s) * 1000), "caught": 0, "uncaught": 0}
@@ -286,7 +317,8 @@ async def timeseries(*, hours: int, buckets: int,
 
 
 async def event_series(*, hours: int, buckets: int,
-                       environment: Optional[str] = None) -> dict:
+                       environment: Optional[str] = None,
+                       project_id: Optional[str] = None) -> dict:
     """Per-fingerprint bucketed occurrence counts over the last `hours`.
 
     Returns, for every fingerprint seen in the window, its total occurrences
@@ -304,6 +336,7 @@ async def event_series(*, hours: int, buckets: int,
     ).where(ExceptionRow.received_at >= start_iso)
     if environment:
         q = q.where(_env_clause(environment))
+    q = _apply_project(q, project_id, ExceptionRow.project_id)
 
     async with session() as s:
         rows = (await s.execute(q)).all()
@@ -339,7 +372,8 @@ async def event_series(*, hours: int, buckets: int,
 async def count_occurrences(*, minutes: int, deployment_id: Optional[str] = None,
                             fingerprint: Optional[str] = None,
                             exception_type: Optional[str] = None,
-                            environment: Optional[str] = None) -> int:
+                            environment: Optional[str] = None,
+                            project_id: Optional[str] = None) -> int:
     """Sum `hit_count` over the last `minutes`, optionally scoped. Used by the
     alert engine's volume-threshold evaluation."""
     start = datetime.now(timezone.utc) - timedelta(minutes=minutes)
@@ -354,31 +388,42 @@ async def count_occurrences(*, minutes: int, deployment_id: Optional[str] = None
         q = q.where(ExceptionRow.exception_type == exception_type)
     if environment:
         q = q.where(_env_clause(environment))
+    q = _apply_project(q, project_id, ExceptionRow.project_id)
     async with session() as s:
         return int(await s.scalar(q) or 0)
 
 
-async def fingerprint_row_count(fingerprint: str) -> int:
-    """How many stored rows share this fingerprint (1 == first-ever occurrence).
-    Lets the alert engine detect genuinely new exception classes."""
+async def fingerprint_row_count(fingerprint: str,
+                                project_id: Optional[str] = None) -> int:
+    """How many stored rows share this fingerprint (1 == first-ever occurrence)
+    within the tenant. Lets the alert engine detect genuinely new exception
+    classes per project."""
+    q = select(func.count()).select_from(ExceptionRow).where(
+        ExceptionRow.fingerprint == fingerprint)
+    q = _apply_project(q, project_id, ExceptionRow.project_id)
     async with session() as s:
-        return int(await s.scalar(
-            select(func.count()).select_from(ExceptionRow)
-            .where(ExceptionRow.fingerprint == fingerprint)) or 0)
+        return int(await s.scalar(q) or 0)
 
 
-async def list_instances() -> list[dict]:
+async def list_instances(project_id: Optional[str] = None) -> list[dict]:
+    q = _apply_project(
+        select(JvmInstanceRow).order_by(JvmInstanceRow.id.desc()),
+        project_id, JvmInstanceRow.project_id)
     async with session() as s:
-        rows = (await s.execute(
-            select(JvmInstanceRow).order_by(JvmInstanceRow.id.desc()))).scalars().all()
+        rows = (await s.execute(q)).scalars().all()
     return [json.loads(r.raw_json) for r in rows]
 
 
-async def get_instance(instance_id: str) -> Optional[dict]:
+async def get_instance(instance_id: str,
+                       project_id: Optional[str] = None) -> Optional[dict]:
     async with session() as s:
         row = await s.scalar(
             select(JvmInstanceRow).where(JvmInstanceRow.instance_id == instance_id))
-        return json.loads(row.raw_json) if row else None
+        if not row:
+            return None
+        if project_id is not None and row.project_id != project_id:
+            return None
+        return json.loads(row.raw_json)
 
 
 import uuid
@@ -391,6 +436,7 @@ CONFIG_TABLES = frozenset({
     "api_tokens",
     "team_members",
     "workspace_settings",
+    "projects",
 })
 
 

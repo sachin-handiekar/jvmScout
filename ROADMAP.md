@@ -77,10 +77,14 @@ Detailed status lives in the working notes; headline remaining items:
   uncaught/caught types the agent produces; Alerts now fire (evaluation on
   ingest + Slack/webhook delivery). Remaining: Integrations are still
   storage-only, and Email/PagerDuty alert channels need real connectors.
-- **Security:** RBAC / token scoping (tokens are all-or-nothing); CSP header on
-  the SPA; dependency scanning (pip-audit / npm audit) in CI.
-- **Agent:** JNI local-ref audit under sustained load; collector-down stress
-  test; the libcurl/POSIX transport is CI-built but not yet run end-to-end.
+- **Security:** mostly done — CSP header on the SPA; dependency scanning
+  (pip-audit / npm audit) in CI; multi-tenant **project + role** token scoping
+  (ingest/viewer/admin) on data + live updates. Remaining: per-project scoping
+  of alert/redaction rules (currently global), and a UI for managing projects /
+  minting scoped tokens (the API supports it today).
+- **Agent:** done — JNI local-ref audit + per-frame bounding; collector-down
+  stress tests. Remaining: the libcurl/POSIX transport is CI-built but not yet
+  run end-to-end on Linux/macOS.
 - **Scale/ops:** horizontal scale (above); retention size cap (currently
   age-only); Postgres load-test.
 - **Distribution/launch:** cut the first tagged release (workflow exists,

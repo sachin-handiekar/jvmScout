@@ -123,11 +123,13 @@ def test_delete_all_requires_confirm(client):
 # --- api tokens (per-token auth) -------------------------------------------
 
 def test_issued_token_grants_access(client):
-    created = client.post("/tokens", json={"name": "agent-1"}, headers=AUTH).json()
+    # A viewer token can read; roles are covered in detail in test_tenancy.py.
+    created = client.post(
+        "/tokens", json={"name": "dash-1", "role": "viewer"}, headers=AUTH).json()
     raw = created["token"]
     assert raw.startswith("stk_")
     assert created["token_prefix"] == raw[:10]
-    # The raw token authenticates like the master key...
+    # The raw token authenticates and can read...
     assert client.get("/stats", headers={"X-API-Key": raw}).status_code == 200
     # ...but a bogus token does not.
     assert client.get("/stats", headers={"X-API-Key": "stk_bogus"}).status_code == 401
@@ -137,7 +139,8 @@ def test_issued_token_grants_access(client):
 
 
 def test_revoked_token_is_rejected(client):
-    created = client.post("/tokens", json={"name": "t"}, headers=AUTH).json()
+    created = client.post(
+        "/tokens", json={"name": "t", "role": "viewer"}, headers=AUTH).json()
     raw, tid = created["token"], created["id"]
     assert client.get("/stats", headers={"X-API-Key": raw}).status_code == 200
     client.patch(f"/config/api_tokens/{tid}",

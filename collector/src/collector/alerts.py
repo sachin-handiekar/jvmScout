@@ -105,7 +105,8 @@ def _event_fields(ev: dict) -> dict:
     }
 
 
-async def _condition_met(rule: dict, ev: dict, fields: dict) -> Optional[str]:
+async def _condition_met(rule: dict, ev: dict, fields: dict,
+                         project_id: Optional[str]) -> Optional[str]:
     """Return a human-readable reason if the rule should fire, else None."""
     trigger = rule.get("trigger_type")
     cfg = rule.get("config") or {}
@@ -113,8 +114,10 @@ async def _condition_met(rule: dict, ev: dict, fields: dict) -> Optional[str]:
 
     if trigger in ("new_event", "deploy_regression"):
         # First-ever occurrence of this fingerprint (the just-stored row is the
-        # only one). deploy_regression is the same signal, scoped to a deployment.
-        if await storage.fingerprint_row_count(fields["fingerprint"]) <= 1:
+        # only one) within the tenant. deploy_regression is the same signal,
+        # scoped to a deployment.
+        if await storage.fingerprint_row_count(
+                fields["fingerprint"], project_id=project_id) <= 1:
             return f"New exception class {fields['exception_type']} first seen"
         return None
 
@@ -130,7 +133,7 @@ async def _condition_met(rule: dict, ev: dict, fields: dict) -> Optional[str]:
         if threshold <= 0:
             return None
         count = await storage.count_occurrences(
-            minutes=window, deployment_id=scope_dep)
+            minutes=window, deployment_id=scope_dep, project_id=project_id)
         if count >= threshold:
             return f"{count} occurrences in {window}m (threshold {threshold})"
         return None
@@ -210,7 +213,8 @@ def _debounced(rule: dict) -> bool:
     return (time.time() - last) < window_s
 
 
-async def _evaluate_rule(rule: dict, ev: dict, fields: dict) -> bool:
+async def _evaluate_rule(rule: dict, ev: dict, fields: dict,
+                         project_id: Optional[str]) -> bool:
     """Evaluate one rule; deliver + record if it fires. Returns True if delivered."""
     if not rule.get("enabled"):
         return False
@@ -218,7 +222,7 @@ async def _evaluate_rule(rule: dict, ev: dict, fields: dict) -> bool:
         return False
     if _debounced(rule):
         return False
-    reason = await _condition_met(rule, ev, fields)
+    reason = await _condition_met(rule, ev, fields, project_id)
     if not reason:
         return False
     payload = _build_message(rule, ev, fields, reason)
@@ -234,11 +238,10 @@ async def _evaluate_rule(rule: dict, ev: dict, fields: dict) -> bool:
     return True
 
 
-async def evaluate_event(ev: dict) -> int:
-    """Evaluate all enabled alert rules against one ingested exception event.
-
-    Returns the number of rules that fired (delivered). Never raises — alerting
-    must not break ingest."""
+async def evaluate_event(ev: dict, project_id: Optional[str] = None) -> int:
+    """Evaluate all enabled alert rules against one ingested exception event,
+    scoped to the event's tenant. Returns the number of rules that fired
+    (delivered). Never raises — alerting must not break ingest."""
     try:
         rules = await rule_cache.get()
     except Exception:
@@ -252,24 +255,24 @@ async def evaluate_event(ev: dict) -> int:
     fired = 0
     for rule in rules:
         try:
-            if await _evaluate_rule(rule, ev, fields):
+            if await _evaluate_rule(rule, ev, fields, project_id):
                 fired += 1
         except Exception:
             log.warning("alert rule %s evaluation error", rule.get("id"), exc_info=True)
     return fired
 
 
-def schedule_evaluation(ev: dict) -> None:
+def schedule_evaluation(ev: dict, project_id: Optional[str] = None) -> None:
     """Fire-and-forget evaluation so ingest latency is unaffected."""
     try:
-        asyncio.get_running_loop().create_task(_run_safely(ev))
+        asyncio.get_running_loop().create_task(_run_safely(ev, project_id))
     except RuntimeError:
         # No running loop (shouldn't happen under the ASGI server) — skip.
         log.debug("no running loop; skipping alert evaluation")
 
 
-async def _run_safely(ev: dict) -> None:
+async def _run_safely(ev: dict, project_id: Optional[str]) -> None:
     try:
-        await evaluate_event(ev)
+        await evaluate_event(ev, project_id)
     except Exception:
         log.warning("alert evaluation task crashed", exc_info=True)

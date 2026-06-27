@@ -11,6 +11,13 @@ GitHub Release assets.
 ## [Unreleased]
 
 ### Added
+- Multi-tenancy: API tokens are now bound to a **project** and a **role**
+  (`ingest` / `viewer` / `admin`). The collector stamps each ingested event with
+  the token's project (authoritatively — agents can't claim another tenant) and
+  filters every read, stat, and live-WebSocket update by the caller's project.
+  `POST /tokens` takes `project_id` + `role`; the master `COLLECTOR_API_KEY` is a
+  superadmin that sees all projects. Adds a `project_id` column (Alembic
+  `0002_project_id`). (Alert/redaction rules remain global for now.)
 - Docker image publishing to GitHub Container Registry: CI pushes a rolling
   `ghcr.io/<owner>/jvmscout-collector:edge` (and `:sha-…`) on `main`, and the
   release workflow pushes versioned `:X.Y.Z` / `:latest` images on `v*` tags —

@@ -124,7 +124,7 @@ Passed as `-agentpath:<library>=key=val,key=val,...`
 | `host`, `port`, `path` | `localhost`, `8080`, `/collector` | Collector endpoint |
 | `https` | `false` | Reach the collector over TLS |
 | `tls_insecure` | `false` | Skip certificate verification (testing/self-signed only) |
-| `api_key` | (empty) | Sent as `Authorization: Bearer <key>`; must match the collector's `COLLECTOR_API_KEY` |
+| `api_key` | (empty) | Sent as `Authorization: Bearer <key>`; the master `COLLECTOR_API_KEY` or a project-scoped **ingest** token (see Multiple apps & teams) |
 | `deployment` | (empty) | Deployment tag on every event |
 | `environment` | (empty) | Environment tag (`production`/`staging`/`development`) reported at startup; drives the dashboard's environment switcher (defaults to `production`) |
 | `console` | `true` | Print captured exceptions to stdout |
@@ -160,12 +160,58 @@ Passed as `-agentpath:<library>=key=val,key=val,...`
 
 ### Authentication
 
-Set `COLLECTOR_API_KEY` to require a key. The agent must send it (configurable
-auth header — see the agent review/roadmap), and the dashboard prompts for it and
-stores it in `localStorage`. Clients may present the key as `Authorization: Bearer
-<key>`, an `X-API-Key` header, or a `?key=` query parameter. `GET /healthz` is
-always public for liveness probes. TLS is expected to be terminated by a reverse
-proxy in front of the collector.
+Set `COLLECTOR_API_KEY` to require a key. Clients may present the key as
+`Authorization: Bearer <key>`, an `X-API-Key` header, or a `?key=` query
+parameter. `GET /healthz` is always public for liveness probes. TLS is expected
+to be terminated by a reverse proxy in front of the collector.
+
+The `COLLECTOR_API_KEY` is the **master key** (superadmin): it can do everything
+and see every project. For per-app/per-team setups, issue scoped tokens instead
+(below) and keep the master key for administration only.
+
+### Multiple apps & teams (projects, scoped tokens)
+
+The collector is multi-tenant. A **token** is bound to a **project** and a
+**role**, and the project is derived *from the token* on ingest — so one app
+can't read or pollute another's data even if it lies about its `deployment`.
+
+Roles:
+
+| Role | Can |
+|---|---|
+| `ingest` | POST events only (give this to agents) |
+| `viewer` | read-only dashboard access, scoped to its project |
+| `admin` | also manage the project's tokens/config |
+
+Issue a token with the master key (or via the dashboard's Tokens screen):
+
+```bash
+# An ingest token for each app/team's JVMs:
+curl -sX POST http://localhost:8080/tokens \
+  -H "Authorization: Bearer $COLLECTOR_API_KEY" -H 'content-type: application/json' \
+  -d '{"name":"payments-agent","project_id":"payments","role":"ingest"}'
+# -> {"token":"stk_…","project_id":"payments","role":"ingest"}
+
+# A viewer token for that team's dashboard login:
+curl -sX POST http://localhost:8080/tokens \
+  -H "Authorization: Bearer $COLLECTOR_API_KEY" -H 'content-type: application/json' \
+  -d '{"name":"payments-dash","project_id":"payments","role":"viewer"}'
+```
+
+Then run each JVM with its project's **ingest** token:
+
+```bash
+java -agentpath:...=host=localhost,port=8080,api_key=stk_…,deployment=checkout MyApp
+```
+
+Multiple JVMs sharing a token belong to the same project; within a project they
+are still separated as individual apps/instances by the agent's `deployment` and
+`instance_id`. Logging into the dashboard with a project's **viewer** token
+shows only that project; the master key sees all projects.
+
+> Note: alert/redaction rules are currently global (shared across projects);
+> per-project rule scoping is planned. Event data and live updates are
+> fully project-scoped.
 
 ## How local-variable capture works
 
