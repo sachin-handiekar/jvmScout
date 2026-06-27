@@ -7,7 +7,7 @@
 
 ## 1. What we are building
 
-A four-tier, OverOps-style runtime error monitor:
+A four-tier runtime error monitor:
 
 ```
 Target JVM ── JVMTI native agent ──HTTP POST──> Python collector ──REST/WS──> Web UI

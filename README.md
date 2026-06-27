@@ -1,6 +1,6 @@
 # jvmScout
 
-**JVMTI exception monitoring for the JVM.** An OverOps-style runtime error monitor: a native JVMTI agent captures every JVM
+**JVMTI exception monitoring for the JVM.** A runtime error monitor: a native JVMTI agent captures every JVM
 exception with full diagnostic context (stack frames, local variable values,
 cause chain, JVM metrics) and POSTs it to a Python collector, which persists it
 and serves a live web dashboard.
