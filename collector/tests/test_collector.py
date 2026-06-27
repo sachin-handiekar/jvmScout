@@ -319,26 +319,16 @@ def test_csp_header_present_with_script_policy(client):
     assert "default-src 'self'" in csp
     assert "object-src 'none'" in csp
     assert "frame-ancestors 'none'" in csp
-    assert "script-src 'self'" in csp
-
-
-def test_script_hashes_cover_inline_and_skip_src(client):
-    from collector.app import _script_hashes
-    html = (
-        "<script>console.log(1)</script>"
-        "<script src='/a.js'></script>"
-        "<script type='module'>boot()</script>"
-    )
-    hashes = _script_hashes(html)
-    # The two inline scripts are hashed; the src= script is skipped.
-    assert len(hashes) == 2
-    assert all(h.startswith("'sha256-") and h.endswith("'") for h in hashes)
+    # script-src allows inline (the SPA injects runtime inline scripts) but not
+    # external origins or eval.
+    assert "script-src 'self' 'unsafe-inline'" in csp
+    assert "'unsafe-eval'" not in csp
 
 
 def test_build_csp_env_override(client, monkeypatch):
     from collector import app as appmod
     monkeypatch.setenv("COLLECTOR_CSP", "default-src 'none'")
-    assert appmod._build_csp(None) == "default-src 'none'"
+    assert appmod._build_csp() == "default-src 'none'"
     # Empty override disables CSP entirely.
     monkeypatch.setenv("COLLECTOR_CSP", "")
-    assert appmod._build_csp(None) is None
+    assert appmod._build_csp() is None
