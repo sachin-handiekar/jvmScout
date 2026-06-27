@@ -9,6 +9,9 @@ agent/build/
 # Java / Maven
 *.class
 target/
+# Build artifact: the BCI transformer jar (built from bci-classfile/ by CI /
+# `javac` + `jar`, copied next to the agent at runtime). Kept locally, untracked.
+*.jar
 
 # Python
 __pycache__/
