@@ -157,6 +157,7 @@ Passed as `-agentpath:<library>=key=val,key=val,...`
 | `COLLECTOR_PURGE_INTERVAL_SECONDS` | `3600` | Periodic retention purge interval (`0` disables). |
 | `COLLECTOR_CSP` | (built-in) | Override the `Content-Security-Policy` sent with the dashboard. By default a strict policy is built automatically (hashes the SPA's inline bootstrap scripts; allows same-origin XHR/WebSocket + Google Fonts). Set a custom value if the dashboard talks to a **cross-origin** collector (add that origin to `connect-src`); set empty to disable. |
 | `COLLECTOR_CSP_REPORT_ONLY` | (off) | When `1`/`true`, send the policy as `Content-Security-Policy-Report-Only` (reports violations without blocking) — useful to validate a policy before enforcing. |
+| `COLLECTOR_DECOMPILER_JAR` | (auto) | Path to the CFR decompiler jar used for the **source view**. The Docker image bundles it (`/app/cfr.jar`) with a headless JRE; for local dev, download CFR and point this at it (and have `java` on PATH / `JAVA_HOME` set). Absent ⇒ source view shows "No source available". |
 | `COLLECTOR_LOG_LEVEL` | `INFO` | Log level. |
 
 ### Authentication
@@ -213,6 +214,24 @@ shows only that project; the master key sees all projects.
 Alert rules, redaction rules, and other config are also **per-project**: an
 admin manages only their own project's rules, and they apply only to that
 project's events. The master key manages every project.
+
+## Source view (decompiled)
+
+The dashboard shows the source of each app frame in a stack trace. A JVMTI agent
+has no source — only bytecode — so:
+
+1. Run the agent with **`source=true`** (or `bci=true`). It captures the original
+   bytecode of app classes (read-only — it never rewrites them) and ships each
+   class once to the collector.
+2. The collector **decompiles** that bytecode on demand (bundled CFR + a headless
+   JRE in the Docker image) and attaches the throwing method's source to each
+   frame. Classes compiled with `-g` (Maven's default) keep their real parameter
+   and local-variable names.
+
+No application source is uploaded or stored — only bytecode, which the collector
+already needs nothing else to reconstruct. Decompiled code is faithful but not
+identical to the original (names/layout can differ), so it's labelled as
+decompiled and shows the method that threw rather than a pixel-exact line.
 
 ## How local-variable capture works
 

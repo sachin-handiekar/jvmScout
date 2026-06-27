@@ -417,7 +417,9 @@ async function detailFrames(snapshotId: string): Promise<{ frames: FrameRow[]; v
       file: f.sourceFile ?? f.source_file ?? "",
       line: f.lineNumber ?? f.line_number ?? 0,
       in_user_code: f.isAppCode ?? f.is_app_code ?? false,
-      source_snippet: null,
+      // Decompiled source the collector attaches per app frame (null if no
+      // bytecode was captured / no decompiler is available).
+      source_snippet: f.sourceSnippet ?? f.source_snippet ?? null,
     });
     const locals: any[] = f.localVariables ?? f.local_variables ?? [];
     locals.forEach((v, vi) => {

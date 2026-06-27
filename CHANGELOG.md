@@ -11,6 +11,13 @@ GitHub Release assets.
 ## [Unreleased]
 
 ### Added
+- Decompiled **source view** for stack frames (no source upload). The agent
+  (`source=true`) captures app-class bytecode and ships it; the collector
+  decompiles it on demand (bundled CFR + headless JRE in the image) and attaches
+  the throwing method's source to each app frame, so the dashboard's frame panel
+  shows code instead of "No source available". `-g` builds keep real local
+  names. Degrades gracefully when no decompiler is present. Adds the
+  `source_classes` table (Alembic `0004`).
 - Multi-tenancy: API tokens are now bound to a **project** and a **role**
   (`ingest` / `viewer` / `admin`). The collector stamps each ingested event with
   the token's project (authoritatively — agents can't claim another tenant) and

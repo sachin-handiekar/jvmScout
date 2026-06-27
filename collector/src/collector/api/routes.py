@@ -12,7 +12,7 @@ from fastapi import (
     APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect,
 )
 
-from .. import alerts, redaction, storage
+from .. import alerts, decompiler, redaction, storage
 from ..config import settings
 from ..models import AgentStartEvent, ExceptionEvent
 from ..security import (
@@ -184,7 +184,38 @@ async def get_exception_detail(
     ev = await storage.get_exception(exc_id, project_id=principal.scope)
     if ev is None:
         raise HTTPException(status_code=404, detail="not found")
+    await _attach_source(ev, principal.scope)
     return ev
+
+
+async def _attach_source(ev: dict, project_id: Optional[str]) -> None:
+    """Best-effort: decompile each app frame's captured bytecode and attach a
+    ``sourceSnippet`` so the dashboard frame panel can show source. No-op when no
+    decompiler/bytecode is available."""
+    if not decompiler.available():
+        return
+    frames = ev.get("stackTrace") or ev.get("stack_trace") or []
+    for f in frames:
+        if not isinstance(f, dict):
+            continue
+        if not (f.get("isAppCode") or f.get("is_app_code")):
+            continue
+        if f.get("sourceSnippet"):
+            continue
+        cls = f.get("className") or f.get("class_name") or ""
+        if not cls:
+            continue
+        slash = cls.replace(".", "/")
+        b64 = await storage.get_source_class(slash, project_id=project_id)
+        if not b64:
+            continue
+        # Decompilation shells out to the JVM; run it off the event loop.
+        src = await asyncio.to_thread(decompiler.decompile_class, slash, b64)
+        if not src:
+            continue
+        method = f.get("methodName") or f.get("method_name") or ""
+        line = int(f.get("lineNumber") or f.get("line_number") or 0)
+        f["sourceSnippet"] = decompiler.build_snippet(src, method, line)
 
 
 @router.delete("/exceptions/{exc_id}")
