@@ -37,6 +37,7 @@ set(CORE_SOURCES
   src/system_info.cpp
   src/bci_engine.cpp
   src/bci_shadow.cpp
+  src/source_cache.cpp
 )
 
 if(WIN32)

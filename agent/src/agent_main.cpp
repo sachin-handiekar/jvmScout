@@ -70,9 +70,19 @@ void JNICALL class_file_load_hook(jvmtiEnv* jvmti, JNIEnv* jni,
                                   jint* new_class_data_len,
                                   unsigned char** new_class_data) {
     AgentContext* ctx = agent_context();
-    if (!ctx || !ctx->config.bci) return;
-    bci_engine::on_class_file_load(*ctx, jvmti, jni, name, class_data_len,
-                                   class_data, new_class_data_len, new_class_data);
+    if (!ctx || (!ctx->config.bci && !ctx->config.source)) return;
+    // Capture the ORIGINAL bytes of app-code classes (pre-transform) so the
+    // collector can decompile them on demand for the source view. This only
+    // reads bytes — unlike BCI transformation it can never break a class.
+    if (name && ctx->location_filter && ctx->location_filter->accept(name)) {
+        ctx->source_cache.store(name, class_data,
+                                static_cast<size_t>(class_data_len));
+    }
+    // BCI transformation (which rewrites bytecode) only runs when bci=true.
+    if (ctx->config.bci) {
+        bci_engine::on_class_file_load(*ctx, jvmti, jni, name, class_data_len,
+                                       class_data, new_class_data_len, new_class_data);
+    }
 }
 
 bool add_capabilities(jvmtiEnv* jvmti) {
@@ -154,7 +164,8 @@ Agent_OnLoad(JavaVM* vm, char* options, void* /*reserved*/) {
     jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, nullptr);
     jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, nullptr);
     jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_EXCEPTION, nullptr);
-    if (ctx->config.bci) {
+    if (ctx->config.bci || ctx->config.source) {
+        // Needed for BCI transformation and/or original-bytecode capture.
         jvmti->SetEventNotificationMode(JVMTI_ENABLE,
                                         JVMTI_EVENT_CLASS_FILE_LOAD_HOOK, nullptr);
     }

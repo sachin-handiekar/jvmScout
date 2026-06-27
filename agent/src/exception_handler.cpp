@@ -4,6 +4,7 @@
 #include "event_model.h"
 #include "event_serializer.h"
 #include "fingerprint.h"
+#include "json_utils.h"
 #include "jvm_metrics.h"
 #include "jvmti_utils.h"
 #include "stack_walker.h"
@@ -292,6 +293,28 @@ void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
         }
 
         print_console(ctx->config, ev);
+
+        // Ship the original bytecode of app-code classes in this stack (once per
+        // class per process) so the collector can decompile them for the source
+        // view. Only meaningful for FULL captures, which carry the full stack.
+        if (ctx->queue && d.mode == CaptureMode::FULL) {
+            for (const auto& fr : ev.stack) {
+                if (!fr.app_code || fr.class_name.empty()) continue;
+                std::string slash = fr.class_name;
+                for (char& c : slash) if (c == '.') c = '/';
+                std::string b64 = ctx->source_cache.take_unshipped(slash);
+                if (b64.empty()) continue;
+                JsonWriter w;
+                w.begin_object()
+                    .field("type", "source_class")
+                    .field("instanceId", ctx->config.instance_id)
+                    .field("deploymentId", ctx->config.deployment)
+                    .field("className", slash)
+                    .field("bytecodeB64", b64)
+                    .end_object();
+                ctx->queue->enqueue(w.str());
+            }
+        }
 
         if (ctx->queue) {
             ctx->queue->enqueue(serialize_event(ev));

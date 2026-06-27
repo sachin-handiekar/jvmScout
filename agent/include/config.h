@@ -38,6 +38,12 @@ struct AgentConfig {
     std::vector<std::string> bci_exclude;
     bool bci_verbose = false;
 
+    // Source-code mapping: capture original app-class bytecode (via the class
+    // load hook) and ship it so the collector can decompile it for the source
+    // view. Independent of BCI *transformation* (it only reads bytes, so it
+    // can't break a class). Enabling bci also enables capture.
+    bool source = false;
+
     std::string instance_id;                   // auto UUID if empty
     std::vector<std::string> env_capture;      // env var glob patterns
     std::vector<std::string> redact_props;     // sensitive sys-prop keys to redact

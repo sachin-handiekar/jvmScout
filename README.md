@@ -138,6 +138,7 @@ Passed as `-agentpath:<library>=key=val,key=val,...`
 | `bci_packages` | (empty) | BCI allowlist (`;`-separated package prefixes, dot or slash form). When set, only matching classes are instrumented. |
 | `bci_exclude` | (empty) | BCI denylist (`;`-separated prefixes); matching classes are never instrumented. Applied on top of the transformer's built-in JDK/framework excludes. |
 | `bci_verbose` | `false` | Log per-class BCI instrument/skip decisions. |
+| `source` | `false` | Capture original app-class bytecode and ship it so the collector can show **decompiled source** per stack frame. Read-only (never rewrites bytecode, unlike `bci`), so it can't break a class. `bci=true` also enables capture. |
 | `instance_id` | auto UUID | JVM instance identity |
 | `env_capture` | (empty) | Env-var glob patterns to capture |
 | `redact_props` | 7 patterns | Sensitive keys to redact |

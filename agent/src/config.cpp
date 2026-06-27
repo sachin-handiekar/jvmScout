@@ -99,6 +99,7 @@ AgentConfig parse_config(const char* options) {
             else if (key == "bci_packages") cfg.bci_packages = split(val, ';');
             else if (key == "bci_exclude") cfg.bci_exclude = split(val, ';');
             else if (key == "bci_verbose") cfg.bci_verbose = to_bool(val);
+            else if (key == "source") cfg.source = to_bool(val);
             else if (key == "instance_id") cfg.instance_id = val;
             else if (key == "env_capture") cfg.env_capture = split(val, ';');
             else if (key == "redact_props") { for (auto& p : split(val, ';')) cfg.redact_props.push_back(p); }

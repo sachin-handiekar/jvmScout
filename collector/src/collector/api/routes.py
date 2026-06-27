@@ -140,6 +140,10 @@ async def ingest(request: Request,
                 ev = AgentStartEvent.model_validate(raw)
                 await storage.store_agent_start(ev, raw, project_id)
                 await manager.broadcast({"kind": "agent_start", "event": raw}, project_id)
+            elif raw.get("type") == "source_class":
+                # App-class bytecode for the decompiled source view (not an event).
+                await storage.store_source_class(
+                    project_id, raw.get("className") or "", raw.get("bytecodeB64") or "")
             else:
                 # Redact captured values before parsing/storing/broadcasting.
                 raw = redaction.redact_event(raw, rules)
