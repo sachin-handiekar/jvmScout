@@ -6,9 +6,9 @@ agent/build/
 *.obj
 *.o
 
-# Java
+# Java / Maven
 *.class
-bci-classfile/target/
+target/
 
 # Python
 __pycache__/
@@ -16,6 +16,9 @@ __pycache__/
 collector/.venv/
 collector/*.db
 collector/*.db-*
+
+# Node / tooling
+node_modules/
 
 # Editors
 .idea/

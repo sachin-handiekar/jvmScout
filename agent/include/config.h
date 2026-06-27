@@ -12,9 +12,18 @@ struct AgentConfig {
     int port = 8080;
     std::string path = "/collector";
     std::string deployment;
+    std::string environment;  // e.g. production/staging/development (UI grouping)
     bool console = true;
     int depth = 3;            // object-inspection recursion depth
     int timeout_ms = 5000;    // HTTP timeout
+
+    // Transport security. When https is set the collector is reached over TLS;
+    // tls_insecure skips certificate verification (testing/self-signed only).
+    // api_key, if set, is sent as an "Authorization: Bearer <key>" header so an
+    // authenticated collector (COLLECTOR_API_KEY) accepts the agent's events.
+    bool https = false;
+    bool tls_insecure = false;
+    std::string api_key;
 
     // Filtering: exception-type denylist and throw-site (location) denylist,
     // plus an optional allowlist that, when non-empty, switches to allow-only mode.
@@ -37,5 +46,10 @@ struct AgentConfig {
 // Parse the raw -agentpath option string into an AgentConfig, applying defaults
 // (including the built-in deny/location_deny/redact_props pattern sets).
 AgentConfig parse_config(const char* options);
+
+// True if `name` contains any of `patterns` (case-insensitive substring). Used
+// to decide whether a captured value (by variable/property/env name) should be
+// redacted. Shared by the local-variable capture path and system-info capture.
+bool redact_matches(const std::vector<std::string>& patterns, const std::string& name);
 
 #endif  // JVMTI_AGENT_CONFIG_H

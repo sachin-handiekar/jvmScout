@@ -56,6 +56,17 @@ std::vector<std::string> default_redact_props() {
 
 }  // namespace
 
+bool redact_matches(const std::vector<std::string>& patterns, const std::string& name) {
+    std::string k = name;
+    std::transform(k.begin(), k.end(), k.begin(), ::tolower);
+    for (const auto& pat : patterns) {
+        std::string p = pat;
+        std::transform(p.begin(), p.end(), p.begin(), ::tolower);
+        if (!p.empty() && k.find(p) != std::string::npos) return true;
+    }
+    return false;
+}
+
 AgentConfig parse_config(const char* options) {
     AgentConfig cfg;
     cfg.deny = default_type_deny();
@@ -73,9 +84,13 @@ AgentConfig parse_config(const char* options) {
             else if (key == "port") cfg.port = std::atoi(val.c_str());
             else if (key == "path") cfg.path = val;
             else if (key == "deployment") cfg.deployment = val;
+            else if (key == "environment") cfg.environment = val;
             else if (key == "console") cfg.console = to_bool(val);
             else if (key == "depth") cfg.depth = std::atoi(val.c_str());
             else if (key == "timeout") cfg.timeout_ms = std::atoi(val.c_str());
+            else if (key == "https") cfg.https = to_bool(val);
+            else if (key == "tls_insecure") cfg.tls_insecure = to_bool(val);
+            else if (key == "api_key") cfg.api_key = val;
             else if (key == "deny") { for (auto& p : split(val, ';')) cfg.deny.push_back(p); }
             else if (key == "location_deny") { for (auto& p : split(val, ';')) cfg.location_deny.push_back(p); }
             else if (key == "capture_packages") cfg.capture_packages = split(val, ';');

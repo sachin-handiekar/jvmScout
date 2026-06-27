@@ -22,10 +22,33 @@ const char* capture_mode_name(CaptureMode m) {
     return "FULL";
 }
 
+size_t Sampler::tracked() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return states_.size();
+}
+
 Sampler::Decision Sampler::decide(const std::string& fingerprint) {
     const int64_t t = now_ms();
     std::lock_guard<std::mutex> lock(mu_);
-    State& st = states_[fingerprint];
+
+    auto it = states_.find(fingerprint);
+    if (it == states_.end()) {
+        // New fingerprint: evict the least-recently-used entry if at capacity.
+        if (states_.size() >= max_entries_ && !lru_.empty()) {
+            const std::string victim = lru_.back();
+            lru_.pop_back();
+            states_.erase(victim);
+        }
+        lru_.push_front(fingerprint);
+        it = states_.emplace(fingerprint, State{}).first;
+        it->second.lru_it = lru_.begin();
+    } else {
+        // Existing fingerprint: promote to most-recently-used.
+        lru_.splice(lru_.begin(), lru_, it->second.lru_it);
+        it->second.lru_it = lru_.begin();
+    }
+
+    State& st = it->second;
     st.total++;
 
     // Roll the window.

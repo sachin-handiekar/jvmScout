@@ -1,6 +1,7 @@
 import java.lang.classfile.CodeBuilder;
 import java.lang.classfile.CodeElement;
 import java.lang.classfile.CodeTransform;
+import java.lang.classfile.Label;
 import java.lang.classfile.TypeKind;
 import java.lang.classfile.instruction.ArrayLoadInstruction;
 import java.lang.classfile.instruction.ArrayStoreInstruction;
@@ -19,7 +20,11 @@ import java.util.Map;
  *   - {@code __JvmtiShadow.enterMethod()} + parameter capture at method entry;
  *   - capture of all known (stored) locals before each throw-capable
  *     instruction (invoke, field access, array access);
- *   - {@code __JvmtiShadow.exitMethod()} before each normal return.
+ *   - {@code __JvmtiShadow.exitMethod()} before each normal return;
+ *   - a catch-all region around the whole body that calls
+ *     {@code exitMethod()} and rethrows, so the shadow depth counter is also
+ *     balanced when the method unwinds exceptionally (previously a leak —
+ *     exceptional exits skipped {@code exitMethod}, ratcheting the depth up).
  *
  * Known slots are learned by watching store instructions, mirroring the
  * "all-visible-locals" capture described in the design notes.
@@ -38,6 +43,9 @@ final class ShadowCodeTransform implements CodeTransform {
     private final Map<Integer, TypeKind> known = new LinkedHashMap<>();
     private final List<int[]> params;  // {slot, kindOrdinal}
 
+    // Start of the catch-all protected region (bound at method entry).
+    private Label tryStart;
+
     ShadowCodeTransform(List<int[]> params) {
         this.params = params;
         for (int[] p : params) {
@@ -47,10 +55,23 @@ final class ShadowCodeTransform implements CodeTransform {
 
     @Override
     public void atStart(CodeBuilder cb) {
+        tryStart = cb.newBoundLabel();
         cb.invokestatic(SHADOW, "enterMethod", MTD_VOID);
         for (int[] p : params) {
             emitCapture(cb, p[0], TypeKind.values()[p[1]]);
         }
+    }
+
+    @Override
+    public void atEnd(CodeBuilder cb) {
+        // Protect the whole original body: on any exception that unwinds out of
+        // this method, pop the shadow frame (balancing enterMethod) and rethrow.
+        Label tryEnd = cb.newBoundLabel();
+        Label handler = cb.newLabel();
+        cb.exceptionCatchAll(tryStart, tryEnd, handler);
+        cb.labelBinding(handler);            // handler entry: Throwable is on the stack
+        cb.invokestatic(SHADOW, "exitMethod", MTD_VOID);
+        cb.athrow();                          // rethrow the in-flight Throwable
     }
 
     @Override

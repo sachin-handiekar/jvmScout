@@ -19,6 +19,12 @@ public:
     static constexpr size_t kMaxQueue = 10000;
     static constexpr size_t kBatchSize = 20;
     static constexpr int kFlushMs = 2000;
+    // On a failed POST: retry up to kSendRetries times with exponential backoff
+    // (kRetryBaseMs, doubling, capped at kRetryMaxMs), then requeue the batch to
+    // the front (up to kMaxQueue) before counting it as dropped.
+    static constexpr int kSendRetries = 3;
+    static constexpr int kRetryBaseMs = 200;
+    static constexpr int kRetryMaxMs = 5000;
 
     AsyncQueue(ITransport* transport, std::string endpoint_label);
     ~AsyncQueue();
@@ -34,6 +40,11 @@ public:
 private:
     void run();
     std::string build_batch(std::deque<std::string>& batch);
+    // Try to POST a batch with bounded retry/backoff. Returns true if sent.
+    bool send_with_retry(const std::string& body);
+    // Put an unsent batch back at the front of the queue (preserving order),
+    // dropping (and counting) any overflow beyond kMaxQueue.
+    void requeue_front(std::deque<std::string>& batch);
 
     ITransport* transport_;
     std::string label_;

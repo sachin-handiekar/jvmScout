@@ -66,14 +66,7 @@ bool glob_match(const std::string& pat, const std::string& s) {
 }
 
 bool is_redacted(const AgentConfig& cfg, const std::string& key) {
-    std::string k = key;
-    std::transform(k.begin(), k.end(), k.begin(), ::tolower);
-    for (const auto& pat : cfg.redact_props) {
-        std::string p = pat;
-        std::transform(p.begin(), p.end(), p.begin(), ::tolower);
-        if (k.find(p) != std::string::npos) return true;
-    }
-    return false;
+    return redact_matches(cfg.redact_props, key);
 }
 
 void write_jvm_args(JsonWriter& w, JNIEnv* jni) {
@@ -114,6 +107,7 @@ std::string build_agent_start_event(AgentContext& ctx, jvmtiEnv* /*jvmti*/,
     w.field("timestamp", iso_now());
     w.field("instanceId", cfg.instance_id);
     w.field("deploymentId", cfg.deployment);
+    w.field("environment", cfg.environment);
 
     w.key("jvmInfo").begin_object();
     w.field("version", get_property(jni, "java.version"));

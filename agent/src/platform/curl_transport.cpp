@@ -14,8 +14,9 @@ size_t discard_body(char* /*ptr*/, size_t size, size_t nmemb, void* /*ud*/) {
 
 class CurlTransport : public ITransport {
 public:
-    CurlTransport(std::string url, int timeout_ms)
-        : url_(std::move(url)), timeout_ms_(timeout_ms) {
+    CurlTransport(std::string url, int timeout_ms, bool tls_insecure, std::string api_key)
+        : url_(std::move(url)), timeout_ms_(timeout_ms),
+          tls_insecure_(tls_insecure), api_key_(std::move(api_key)) {
         curl_global_init(CURL_GLOBAL_DEFAULT);
     }
     ~CurlTransport() override { curl_global_cleanup(); }
@@ -26,6 +27,11 @@ public:
 
         struct curl_slist* headers = nullptr;
         headers = curl_slist_append(headers, "Content-Type: application/json");
+        std::string auth;
+        if (!api_key_.empty()) {
+            auth = "Authorization: Bearer " + api_key_;
+            headers = curl_slist_append(headers, auth.c_str());
+        }
 
         curl_easy_setopt(curl, CURLOPT_URL, url_.c_str());
         curl_easy_setopt(curl, CURLOPT_POST, 1L);
@@ -35,6 +41,11 @@ public:
         curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, static_cast<long>(timeout_ms_));
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, discard_body);
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+        if (tls_insecure_) {
+            // Testing/self-signed only: skip peer/host certificate verification.
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+        }
 
         CURLcode rc = curl_easy_perform(curl);
         long status = 0;
@@ -52,12 +63,15 @@ public:
 private:
     std::string url_;
     int timeout_ms_;
+    bool tls_insecure_;
+    std::string api_key_;
 };
 
 }  // namespace
 
 std::unique_ptr<ITransport> create_transport(const AgentConfig& cfg) {
-    std::string scheme = "http://";
+    std::string scheme = cfg.https ? "https://" : "http://";
     std::string url = scheme + cfg.host + ":" + std::to_string(cfg.port) + cfg.path;
-    return std::make_unique<CurlTransport>(url, cfg.timeout_ms);
+    return std::make_unique<CurlTransport>(url, cfg.timeout_ms, cfg.tls_insecure,
+                                           cfg.api_key);
 }

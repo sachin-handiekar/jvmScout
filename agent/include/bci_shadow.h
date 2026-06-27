@@ -2,6 +2,8 @@
 #define JVMTI_AGENT_BCI_SHADOW_H
 
 #include <jvmti.h>
+#include <atomic>
+#include <mutex>
 #include <string>
 
 #include "event_model.h"
@@ -15,14 +17,19 @@ public:
     // Resolve __JvmtiShadow + method IDs once the class is loaded. Safe to call
     // repeatedly; becomes ready() after the first success.
     bool ensure_ready(JNIEnv* jni);
-    bool ready() const { return ready_; }
+    bool ready() const { return ready_.load(std::memory_order_acquire); }
 
     // Append shadow-sourced locals for stack depth `depth` into `out`.
     // Returns true if any were added. No-op when not ready.
     bool read_frame(JNIEnv* jni, int depth, std::vector<LocalVariable>& out);
 
 private:
-    bool ready_ = false;
+    // ready_ is published with release semantics once initialization fully
+    // succeeds; init_mu_ serializes the (retryable) first-time resolution so
+    // concurrent exception callbacks can't NewGlobalRef twice or observe a
+    // half-initialized state.
+    std::atomic<bool> ready_{false};
+    std::mutex init_mu_;
     jclass shadow_class_ = nullptr;  // global ref
     jmethodID get_frame_ = nullptr;
     jmethodID get_metadata_ = nullptr;

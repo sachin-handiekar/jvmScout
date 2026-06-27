@@ -1,6 +1,7 @@
 #include "stack_walker.h"
 
 #include "bci_shadow.h"
+#include "config.h"
 #include "ifilter.h"
 #include "object_inspector.h"
 #include "jvmti_utils.h"
@@ -129,15 +130,24 @@ void StackWalker::capture_frame_locals(JNIEnv* jni, jthread thread, jint depth,
 }
 
 std::vector<StackFrame> StackWalker::walk(JNIEnv* jni, jthread thread,
-                                          bool capture_locals) {
+                                          bool capture_locals, jint max_frames) {
     std::vector<StackFrame> frames;
     jvmtiFrameInfo info[kMaxFrames];
+    jint want = (max_frames > 0 && max_frames < kMaxFrames) ? max_frames : kMaxFrames;
     jint count = 0;
-    if (jvmti_->GetStackTrace(thread, 0, kMaxFrames, info, &count) != JVMTI_ERROR_NONE) {
+    if (jvmti_->GetStackTrace(thread, 0, want, info, &count) != JVMTI_ERROR_NONE) {
         return frames;
     }
 
     for (jint i = 0; i < count; ++i) {
+        // Bound the JNI local references created per frame: GetMethodDeclaringClass
+        // and the per-local GetLocalObject calls each yield a local ref. Without a
+        // per-frame frame these accumulate across all (up to kMaxFrames=100) frames
+        // within the caller's single PushLocalFrame, which on deep stacks can exceed
+        // its reserved capacity (and trips -Xcheck:jni). Only std::string data
+        // escapes each frame, so popping here is safe.
+        JniLocalFrame frameRefs(jni, 16);
+
         StackFrame frame;
         frame.frame_index = i;
 
@@ -163,6 +173,7 @@ std::vector<StackFrame> StackWalker::walk(JNIEnv* jni, jthread thread,
                 JvmtiString freeSrc(jvmti_, src);
                 frame.source_file = src ? src : "";
             }
+            jni->DeleteLocalRef(decl);
         }
         frame.class_name = signature_to_dotted(class_sig);
         frame.line_number = resolve_line_number(jvmti_, method, info[i].location);
@@ -172,6 +183,16 @@ std::vector<StackFrame> StackWalker::walk(JNIEnv* jni, jthread thread,
 
         if (capture_locals && frame.app_code) {
             capture_frame_locals(jni, thread, i, method, frame);
+            // Mask sensitive values by variable name (covers both the
+            // debug_info and bci_shadow locals just populated) so secrets never
+            // leave the JVM.
+            if (redact_props_ && !redact_props_->empty()) {
+                for (auto& lv : frame.locals) {
+                    if (!lv.name.empty() && redact_matches(*redact_props_, lv.name)) {
+                        lv.value = "***";
+                    }
+                }
+            }
         }
 
         frames.push_back(std::move(frame));

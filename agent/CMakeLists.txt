@@ -73,3 +73,24 @@ else()
     target_link_options(jvmti-agent PRIVATE -undefined dynamic_lookup)
   endif()
 endif()
+
+# ---------------------------------------------------------------------------
+# Unit tests for the pure-logic components (no JNI/JVMTI required).
+# ---------------------------------------------------------------------------
+option(AGENT_BUILD_TESTS "Build the agent unit tests" ON)
+if(AGENT_BUILD_TESTS)
+  enable_testing()
+  add_executable(agent_tests
+    tests/agent_tests.cpp
+    src/fingerprint.cpp
+    src/filters.cpp
+    src/sampling.cpp
+    src/json_utils.cpp
+    src/config.cpp
+    src/async_queue.cpp
+  )
+  target_include_directories(agent_tests PRIVATE include)
+  find_package(Threads REQUIRED)
+  target_link_libraries(agent_tests PRIVATE Threads::Threads)
+  add_test(NAME agent_tests COMMAND agent_tests)
+endif()

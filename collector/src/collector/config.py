@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+def _split_csv(value: str) -> tuple[str, ...]:
+    return tuple(p.strip() for p in value.split(",") if p.strip())
 
 
 @dataclass(frozen=True)
@@ -12,6 +16,17 @@ class Settings:
     db_url: str = "sqlite+aiosqlite:///./collector.db"
     retention_days: int = 30
 
+    # Security / limits.
+    api_key: str = ""
+    cors_origins: tuple[str, ...] = field(default_factory=tuple)
+    max_body_bytes: int = 5 * 1024 * 1024  # 5 MiB
+    rate_limit_per_min: int = 0  # 0 disables rate limiting
+    purge_interval_seconds: int = 3600  # 0 disables periodic purge
+
+    @property
+    def auth_enabled(self) -> bool:
+        return bool(self.api_key)
+
     @staticmethod
     def from_env() -> "Settings":
         return Settings(
@@ -19,6 +34,11 @@ class Settings:
             port=int(os.environ.get("COLLECTOR_PORT", "8080")),
             db_url=os.environ.get("COLLECTOR_DB_URL", "sqlite+aiosqlite:///./collector.db"),
             retention_days=int(os.environ.get("COLLECTOR_RETENTION_DAYS", "30")),
+            api_key=os.environ.get("COLLECTOR_API_KEY", ""),
+            cors_origins=_split_csv(os.environ.get("COLLECTOR_CORS_ORIGINS", "")),
+            max_body_bytes=int(os.environ.get("COLLECTOR_MAX_BODY_BYTES", str(5 * 1024 * 1024))),
+            rate_limit_per_min=int(os.environ.get("COLLECTOR_RATE_LIMIT_PER_MIN", "0")),
+            purge_interval_seconds=int(os.environ.get("COLLECTOR_PURGE_INTERVAL_SECONDS", "3600")),
         )
 
 
