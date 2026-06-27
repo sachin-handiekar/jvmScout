@@ -11,6 +11,10 @@ GitHub Release assets.
 ## [Unreleased]
 
 ### Added
+- Docker image publishing to GitHub Container Registry: CI pushes a rolling
+  `ghcr.io/<owner>/jvmscout-collector:edge` (and `:sha-…`) on `main`, and the
+  release workflow pushes versioned `:X.Y.Z` / `:latest` images on `v*` tags —
+  so users can `docker run` the collector+dashboard without a build toolchain.
 - Alert engine: alert rules created in the UI are now evaluated on ingest and
   delivered. `new_event`/`deploy_regression`, `volume_threshold`, and
   `event_reoccurs` triggers are supported, scoped per application/deployment,

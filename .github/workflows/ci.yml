@@ -181,12 +181,49 @@ jobs:
           npm audit --omit=dev --audit-level=critical
 
   # ---------------------------------------------------------------------------
-  # Docker image: validates the multi-stage build (frontend SPA + collector).
+  # Docker image: validates the multi-stage build (frontend SPA + collector) on
+  # every PR, and publishes a rolling image to GHCR on pushes to main so users
+  # can `docker pull ghcr.io/<owner>/jvmscout-collector:edge` without building.
+  # Tagged releases publish versioned images from release.yml.
   # ---------------------------------------------------------------------------
   docker:
     name: docker image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
-      - name: Build collector image
-        run: docker build -f collector/Dockerfile -t jvmscout-collector:ci .
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Only log in for pushes to this repo (skipped on PRs / forks, where the
+      # token is read-only); the build below still runs for validation.
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/jvmscout-collector
+          tags: |
+            type=raw,value=edge,enable={{is_default_branch}}
+            type=sha,format=short
+
+      - name: Build (push only on main)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: collector/Dockerfile
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

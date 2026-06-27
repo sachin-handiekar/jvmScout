@@ -30,15 +30,28 @@ shims sit behind interfaces.
 
 ## Quickstart (Docker)
 
-The fastest way to get the collector + dashboard running:
+The collector **and** dashboard ship as a single image. Pull the published
+image and run it (no build toolchain needed):
 
 ```bash
-docker compose up
+docker run -p 8080:8080 -v jvmscout-data:/data \
+  ghcr.io/<owner>/jvmscout-collector:latest
 # dashboard -> http://localhost:8080
 ```
 
-Then build the native agent (below) and point a JVM at the collector. The SQLite
-database persists in the `jvmscout-data` volume.
+Replace `<owner>` with the repository owner; use `:latest` for the most recent
+release, `:edge` for the latest `main` build, or a specific `:X.Y.Z`. The images
+are built and published by the CI/release workflows.
+
+Or build + run locally from source:
+
+```bash
+docker compose up        # builds collector/Dockerfile, serves on :8080
+```
+
+Either way, then build the native agent (below) and point a host JVM at
+`host=localhost,port=8080`. The SQLite database persists in the `jvmscout-data`
+volume.
 
 ## Prerequisites
 

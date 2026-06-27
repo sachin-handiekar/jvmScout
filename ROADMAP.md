@@ -85,7 +85,8 @@ Detailed status lives in the working notes; headline remaining items:
   age-only); Postgres load-test.
 - **Distribution/launch:** cut the first tagged release (workflow exists,
   unrun); macOS `.dylib` notarization; agent self-version; aarch64 Linux build;
-  end-to-end test in CI; README demo + landing page + benchmarks.
+  end-to-end test in CI; README demo + landing page + benchmarks. (Docker image
+  publishing to GHCR is wired — `:edge` on main, `:X.Y.Z`/`:latest` on tags.)
 
 ### Done (recent hardening)
 
