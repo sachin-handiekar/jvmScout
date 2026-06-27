@@ -84,7 +84,9 @@ class TokenStore:
     async def active(self) -> dict[str, tuple[str, str]]:
         now = time.monotonic()
         if now - self._at > self._ttl:
-            rows = await storage.list_config("api_tokens")
+            # Auth must resolve any token before we know its project, so read
+            # token rows across all tenants.
+            rows = await storage.list_config("api_tokens", all_projects=True)
             self._by_hash = {
                 r["token_hash"]: (
                     r.get("project_id") or DEFAULT_PROJECT,

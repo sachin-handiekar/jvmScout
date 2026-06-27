@@ -17,7 +17,12 @@ GitHub Release assets.
   filters every read, stat, and live-WebSocket update by the caller's project.
   `POST /tokens` takes `project_id` + `role`; the master `COLLECTOR_API_KEY` is a
   superadmin that sees all projects. Adds a `project_id` column (Alembic
-  `0002_project_id`). (Alert/redaction rules remain global for now.)
+  `0002_project_id`).
+- Per-project config: alert rules, redaction rules, and other UI-managed config
+  are now scoped to a project (Alembic `0003_config_project_id`). An admin
+  manages only their project's rules and they apply only to that project's
+  events (redaction + alert evaluation are cached per-project); the master key
+  manages every project.
 - Docker image publishing to GitHub Container Registry: CI pushes a rolling
   `ghcr.io/<owner>/jvmscout-collector:edge` (and `:sha-…`) on `main`, and the
   release workflow pushes versioned `:X.Y.Z` / `:latest` images on `v*` tags —

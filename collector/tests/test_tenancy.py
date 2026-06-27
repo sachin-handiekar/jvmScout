@@ -121,6 +121,59 @@ def test_project_admin_reads_only_its_project(client):
     assert client.get("/exceptions", headers=_hdr(a_admin)).json()["items"] == []
 
 
+# --- per-project config (alert / redaction rules) --------------------------
+
+def _frame_with_local(name: str, value: str):
+    return [{
+        "frameIndex": 0, "className": "C", "methodName": "m", "lineNumber": 1,
+        "isAppCode": True,
+        "localVariables": [{"name": name, "value": value, "slot": 0, "source": "debug_info"}],
+    }]
+
+
+def test_redaction_rules_are_per_project(client):
+    a_admin = _mint(client, "alpha", "admin")
+    a_ingest = _mint(client, "alpha", "ingest")
+    b_ingest = _mint(client, "beta", "ingest")
+    a_view = _mint(client, "alpha", "viewer")
+    b_view = _mint(client, "beta", "viewer")
+
+    # alpha defines a redaction rule; beta has none.
+    client.post("/config/redaction_rules",
+                json={"kind": "identifier", "name": "pw", "value": "password", "enabled": True},
+                headers=_hdr(a_admin))
+    frame = _frame_with_local("password", "hunter2")
+    client.post("/collector", json=exception_event(fingerprint="a1", stackTrace=frame),
+                headers=_hdr(a_ingest))
+    client.post("/collector", json=exception_event(fingerprint="b1", stackTrace=frame),
+                headers=_hdr(b_ingest))
+
+    a_id = client.get("/exceptions", headers=_hdr(a_view)).json()["items"][0]["id"]
+    a_local = client.get(f"/exceptions/{a_id}", headers=_hdr(a_view)).json()
+    assert a_local["stackTrace"][0]["localVariables"][0]["value"] == "***"  # masked
+
+    b_id = client.get("/exceptions", headers=_hdr(b_view)).json()["items"][0]["id"]
+    b_local = client.get(f"/exceptions/{b_id}", headers=_hdr(b_view)).json()
+    assert b_local["stackTrace"][0]["localVariables"][0]["value"] == "hunter2"  # not masked
+
+
+def test_config_listing_is_scoped_per_project(client):
+    a_admin = _mint(client, "alpha", "admin")
+    b_admin = _mint(client, "beta", "admin")
+    client.post("/config/alert_rules",
+                json={"name": "alpha rule", "enabled": True, "trigger_type": "new_event"},
+                headers=_hdr(a_admin))
+
+    a_list = client.get("/config/alert_rules", headers=_hdr(a_admin)).json()
+    b_list = client.get("/config/alert_rules", headers=_hdr(b_admin)).json()
+    m_list = client.get("/config/alert_rules", headers=AUTH).json()
+
+    assert [r["name"] for r in a_list] == ["alpha rule"]
+    assert a_list[0]["project_id"] == "alpha"
+    assert b_list == []  # beta cannot see alpha's rule
+    assert any(r["name"] == "alpha rule" for r in m_list)  # master sees all
+
+
 # --- live WebSocket fan-out ------------------------------------------------
 
 def test_ws_only_receives_own_project_events(client):

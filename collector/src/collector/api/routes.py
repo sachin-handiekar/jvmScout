@@ -65,26 +65,27 @@ manager = ConnectionManager()
 
 
 class _RedactionCache:
-    """Short-TTL cache of compiled redaction rules so ingest doesn't hit the DB
-    per event but still picks up UI rule changes within a few seconds."""
+    """Short-TTL, per-project cache of compiled redaction rules so ingest doesn't
+    hit the DB per event but still picks up UI rule changes within a few seconds.
+    Rules are scoped to the event's tenant (NULL project = the default)."""
 
     def __init__(self, ttl_s: float = 5.0) -> None:
         self._ttl = ttl_s
-        self._at = 0.0
-        self._compiled = redaction.compile_rules([])
+        self._by_project: dict[Optional[str], tuple[float, redaction.CompiledRules]] = {}
 
-    async def get(self) -> redaction.CompiledRules:
+    async def get(self, project_id: Optional[str]) -> redaction.CompiledRules:
         now = time.monotonic()
-        if now - self._at > self._ttl:
-            rules = await storage.list_config("redaction_rules")
-            self._compiled = redaction.compile_rules(rules)
-            self._at = now
-        return self._compiled
+        ent = self._by_project.get(project_id)
+        if ent and now - ent[0] <= self._ttl:
+            return ent[1]
+        rules = await storage.list_config("redaction_rules", project_id=project_id)
+        compiled = redaction.compile_rules(rules)
+        self._by_project[project_id] = (now, compiled)
+        return compiled
 
     def reset(self) -> None:
         """Force a reload on next get() (used for test isolation)."""
-        self._at = 0.0
-        self._compiled = redaction.compile_rules([])
+        self._by_project = {}
 
 
 redaction_cache = _RedactionCache()
@@ -127,7 +128,7 @@ async def ingest(request: Request,
 
     payload = await _read_json_body(request)
     items = payload if isinstance(payload, list) else [payload]
-    rules = await redaction_cache.get()
+    rules = await redaction_cache.get(project_id)
     accepted = 0
     failed = 0
     for raw in items:
@@ -281,10 +282,9 @@ async def create_token(request: Request,
         "name": name or "Untitled token",
         "token_prefix": prefix,
         "token_hash": hash_token(raw),
-        "project_id": project_id,
         "role": role,
         "revoked_at": None,
-    })
+    }, project_id=project_id)
     token_store.reset()  # make the new token usable immediately
     return {"token": raw, "token_prefix": prefix, "id": stored["id"],
             "name": stored.get("name"), "project_id": project_id, "role": role}
@@ -295,14 +295,24 @@ def _check_config_table(table: str) -> None:
         raise HTTPException(status_code=404, detail=f"unknown config table: {table}")
 
 
+def _config_scope(principal: Principal) -> tuple[Optional[str], bool]:
+    """(project_id, all_projects) for config CRUD. The master key manages every
+    tenant; a scoped admin only its own project."""
+    if principal.is_master:
+        return None, True
+    return principal.project_id, False
+
+
 @router.get("/config/{table}")
 async def list_config(table: str,
                       principal: Principal = Depends(require_read)) -> list[dict]:
     _check_config_table(table)
-    # Token metadata (names/prefixes/hashes across tenants) is admin-only.
+    # Token metadata (names/prefixes/hashes) is admin-only.
     if table == "api_tokens" and not principal.can_admin:
         raise HTTPException(status_code=403, detail="token lacks admin access")
-    return await storage.list_config(table)
+    project_id, all_projects = _config_scope(principal)
+    return await storage.list_config(table, project_id=project_id,
+                                     all_projects=all_projects)
 
 
 @router.post("/config/{table}")
@@ -312,7 +322,9 @@ async def create_config(table: str, request: Request,
     payload = await _read_json_body(request)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="expected a JSON object")
-    created = await storage.insert_config(table, payload)
+    # New config belongs to the creating admin's project (master -> default/NULL).
+    project_id = None if principal.is_master else principal.project_id
+    created = await storage.insert_config(table, payload, project_id=project_id)
     if table == "alert_rules":
         alerts.rule_cache.reset()
     if table == "api_tokens":
@@ -327,7 +339,9 @@ async def patch_config(table: str, entity_id: str, request: Request,
     payload = await _read_json_body(request)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="expected a JSON object")
-    updated = await storage.update_config(table, entity_id, payload)
+    project_id, all_projects = _config_scope(principal)
+    updated = await storage.update_config(table, entity_id, payload,
+                                          project_id=project_id, all_projects=all_projects)
     if updated is None:
         raise HTTPException(status_code=404, detail="not found")
     if table == "api_tokens":
@@ -341,7 +355,9 @@ async def patch_config(table: str, entity_id: str, request: Request,
 async def remove_config(table: str, entity_id: str,
                         principal: Principal = Depends(require_admin)) -> dict:
     _check_config_table(table)
-    if not await storage.delete_config(table, entity_id):
+    project_id, all_projects = _config_scope(principal)
+    if not await storage.delete_config(table, entity_id,
+                                       project_id=project_id, all_projects=all_projects):
         raise HTTPException(status_code=404, detail="not found")
     if table == "api_tokens":
         token_store.reset()

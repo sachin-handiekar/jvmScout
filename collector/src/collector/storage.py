@@ -73,6 +73,9 @@ class ConfigEntityRow(Base):
     pk: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     table: Mapped[str] = mapped_column(String(64), index=True)
     entity_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Tenant that owns this config row (NULL = the default project / master).
+    # api_tokens rows are read globally for auth but listed per-project in the UI.
+    project_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     created_at: Mapped[str] = mapped_column(String(32))
     json_data: Mapped[str] = mapped_column(Text)
 
@@ -443,63 +446,79 @@ CONFIG_TABLES = frozenset({
 def _config_to_dict(row: ConfigEntityRow) -> dict:
     data = json.loads(row.json_data)
     data["id"] = row.entity_id
+    data["project_id"] = row.project_id
     data.setdefault("created_at", row.created_at)
     return data
 
 
-async def list_config(table: str) -> list[dict]:
+async def list_config(table: str, *, project_id: Optional[str] = None,
+                      all_projects: bool = False) -> list[dict]:
+    """List config rows for a table. ``all_projects`` (master key / auth) returns
+    every tenant's rows; otherwise only those owned by ``project_id`` (NULL rows
+    for the default project)."""
+    q = (select(ConfigEntityRow)
+         .where(ConfigEntityRow.table == table)
+         .order_by(ConfigEntityRow.pk.asc()))
+    if not all_projects:
+        q = q.where(ConfigEntityRow.project_id == project_id)
     async with session() as s:
-        rows = (await s.execute(
-            select(ConfigEntityRow)
-            .where(ConfigEntityRow.table == table)
-            .order_by(ConfigEntityRow.pk.asc())
-        )).scalars().all()
+        rows = (await s.execute(q)).scalars().all()
     return [_config_to_dict(r) for r in rows]
 
 
-async def insert_config(table: str, payload: dict) -> dict:
+async def insert_config(table: str, payload: dict, *,
+                        project_id: Optional[str] = None) -> dict:
     entity_id = str(payload.get("id") or uuid.uuid4())
     created_at = str(payload.get("created_at") or _now_iso())
-    data = {k: v for k, v in payload.items() if k != "id"}
+    data = {k: v for k, v in payload.items() if k not in ("id", "project_id")}
     data["created_at"] = created_at
     async with session() as s:
         s.add(ConfigEntityRow(
             table=table,
             entity_id=entity_id,
+            project_id=project_id,
             created_at=created_at,
             json_data=json.dumps(data),
         ))
         await s.commit()
     out = dict(data)
     out["id"] = entity_id
+    out["project_id"] = project_id
     return out
 
 
-async def update_config(table: str, entity_id: str, patch: dict) -> Optional[dict]:
+async def _find_config(s, table: str, entity_id: str,
+                       project_id: Optional[str], all_projects: bool):
+    q = select(ConfigEntityRow).where(
+        ConfigEntityRow.table == table,
+        ConfigEntityRow.entity_id == entity_id,
+    )
+    if not all_projects:
+        q = q.where(ConfigEntityRow.project_id == project_id)
+    return await s.scalar(q)
+
+
+async def update_config(table: str, entity_id: str, patch: dict, *,
+                        project_id: Optional[str] = None,
+                        all_projects: bool = False) -> Optional[dict]:
     async with session() as s:
-        row = await s.scalar(
-            select(ConfigEntityRow).where(
-                ConfigEntityRow.table == table,
-                ConfigEntityRow.entity_id == entity_id,
-            ))
+        row = await _find_config(s, table, entity_id, project_id, all_projects)
         if not row:
             return None
         data = json.loads(row.json_data)
         for k, v in patch.items():
-            if k != "id":
+            if k not in ("id", "project_id"):
                 data[k] = v
         row.json_data = json.dumps(data)
         await s.commit()
         return _config_to_dict(row)
 
 
-async def delete_config(table: str, entity_id: str) -> bool:
+async def delete_config(table: str, entity_id: str, *,
+                        project_id: Optional[str] = None,
+                        all_projects: bool = False) -> bool:
     async with session() as s:
-        row = await s.scalar(
-            select(ConfigEntityRow).where(
-                ConfigEntityRow.table == table,
-                ConfigEntityRow.entity_id == entity_id,
-            ))
+        row = await _find_config(s, table, entity_id, project_id, all_projects)
         if not row:
             return False
         await s.delete(row)

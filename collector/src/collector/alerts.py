@@ -55,24 +55,25 @@ def _parse_iso(s: Optional[str]) -> Optional[float]:
 
 
 class _RuleCache:
-    """Short-TTL cache of alert rules so ingest doesn't read the DB per event
-    but still picks up UI edits within a few seconds (mirrors redaction_cache)."""
+    """Short-TTL, per-project cache of alert rules so ingest doesn't read the DB
+    per event but still picks up UI edits within a few seconds. Rules are scoped
+    to the event's tenant (NULL project = the default)."""
 
     def __init__(self, ttl_s: float = 5.0) -> None:
         self._ttl = ttl_s
-        self._at = 0.0
-        self._rules: list[dict] = []
+        self._by_project: dict[Optional[str], tuple[float, list[dict]]] = {}
 
-    async def get(self) -> list[dict]:
+    async def get(self, project_id: Optional[str]) -> list[dict]:
         now = time.monotonic()
-        if now - self._at > self._ttl:
-            self._rules = await storage.list_config("alert_rules")
-            self._at = now
-        return self._rules
+        ent = self._by_project.get(project_id)
+        if ent and now - ent[0] <= self._ttl:
+            return ent[1]
+        rules = await storage.list_config("alert_rules", project_id=project_id)
+        self._by_project[project_id] = (now, rules)
+        return rules
 
     def reset(self) -> None:
-        self._at = 0.0
-        self._rules = []
+        self._by_project = {}
 
 
 rule_cache = _RuleCache()
@@ -231,7 +232,8 @@ async def _evaluate_rule(rule: dict, ev: dict, fields: dict,
         return False
     fired_at = _now_iso()
     await storage.update_config(
-        "alert_rules", str(rule.get("id")), {"last_triggered_at": fired_at})
+        "alert_rules", str(rule.get("id")), {"last_triggered_at": fired_at},
+        project_id=project_id)
     rule["last_triggered_at"] = fired_at  # keep the cached copy consistent
     rule_cache.reset()  # reflect the new last_triggered_at on next read
     log.info("alert rule %s fired: %s", rule.get("id"), reason)
@@ -243,7 +245,7 @@ async def evaluate_event(ev: dict, project_id: Optional[str] = None) -> int:
     scoped to the event's tenant. Returns the number of rules that fired
     (delivered). Never raises — alerting must not break ingest."""
     try:
-        rules = await rule_cache.get()
+        rules = await rule_cache.get(project_id)
     except Exception:
         log.warning("could not load alert rules", exc_info=True)
         return 0

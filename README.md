@@ -209,9 +209,9 @@ are still separated as individual apps/instances by the agent's `deployment` and
 `instance_id`. Logging into the dashboard with a project's **viewer** token
 shows only that project; the master key sees all projects.
 
-> Note: alert/redaction rules are currently global (shared across projects);
-> per-project rule scoping is planned. Event data and live updates are
-> fully project-scoped.
+Alert rules, redaction rules, and other config are also **per-project**: an
+admin manages only their own project's rules, and they apply only to that
+project's events. The master key manages every project.
 
 ## How local-variable capture works
 
