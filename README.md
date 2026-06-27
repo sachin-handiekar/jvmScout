@@ -270,10 +270,28 @@ Two layers, defense in depth:
   - **identifier** rules mask a local whose name matches;
   - **pattern** rules mask any value matching a regex (e.g. card numbers, JWTs).
 
+## Alerts
+
+The dashboard's **Alerts** screen defines rules that the collector evaluates on
+every ingested exception (off the ingest path, so alerting never blocks or
+breaks capture) and delivers when they match:
+
+- **Triggers:** new exception class first seen, occurrences over a threshold in a
+  window, a specific exception type reoccurring, or a new error introduced by a
+  deployment. Rate-based rules have an anti-storm cool-down.
+- **Delivery:** `webhook` and `slack` are delivered over HTTP (a Slack incoming
+  webhook is just a JSON POST). `email`/`pagerduty` need infrastructure this
+  build doesn't ship, so they are logged and **not** marked as triggered.
+- **Per-project:** an admin's rules apply only to their own project's events.
+
 ## Verified
 
 Built and exercised on Windows with JDK 26, GCC (MinGW-w64) + CMake/Ninja, and
 Python 3.14: agent load, exception capture (type/message/line/fingerprint),
 FULL→REDUCED→COUNT_ONLY sampling, local-variable capture via both JVMTI and BCI
 shadow paths, batched HTTP transport, collector ingest/REST/WebSocket, and the
-dashboard.
+dashboard. The collector has an automated test suite (55 tests) covering auth,
+multi-tenant project/role scoping, redaction, alerts, time-series, and config;
+the agent has C++ unit tests (incl. a collector-down/queue stress test). CI also
+builds the agent on Linux/macOS/Windows — but the libcurl transport has not yet
+been exercised end-to-end on Linux/macOS.
