@@ -298,3 +298,44 @@ def test_retention_purge_removes_old_rows(client):
     purged = run_async(_age_and_purge())
     assert purged == 1
     assert client.get("/exceptions", headers=AUTH).json()["total"] == 0
+
+
+# --- security headers / CSP ------------------------------------------------
+
+def test_security_headers_present(client):
+    r = client.get("/healthz")
+    assert r.headers.get("X-Content-Type-Options") == "nosniff"
+    assert r.headers.get("X-Frame-Options") == "DENY"
+    assert r.headers.get("Referrer-Policy") == "no-referrer"
+
+
+def test_csp_header_present_with_script_policy(client):
+    r = client.get("/healthz")
+    csp = r.headers.get("Content-Security-Policy")
+    assert csp is not None
+    assert "default-src 'self'" in csp
+    assert "object-src 'none'" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert "script-src 'self'" in csp
+
+
+def test_script_hashes_cover_inline_and_skip_src(client):
+    from collector.app import _script_hashes
+    html = (
+        "<script>console.log(1)</script>"
+        "<script src='/a.js'></script>"
+        "<script type='module'>boot()</script>"
+    )
+    hashes = _script_hashes(html)
+    # The two inline scripts are hashed; the src= script is skipped.
+    assert len(hashes) == 2
+    assert all(h.startswith("'sha256-") and h.endswith("'") for h in hashes)
+
+
+def test_build_csp_env_override(client, monkeypatch):
+    from collector import app as appmod
+    monkeypatch.setenv("COLLECTOR_CSP", "default-src 'none'")
+    assert appmod._build_csp(None) == "default-src 'none'"
+    # Empty override disables CSP entirely.
+    monkeypatch.setenv("COLLECTOR_CSP", "")
+    assert appmod._build_csp(None) is None

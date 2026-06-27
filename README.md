@@ -141,6 +141,8 @@ Passed as `-agentpath:<library>=key=val,key=val,...`
 | `COLLECTOR_MAX_BODY_BYTES` | `5242880` | Max ingest request body size (rejects with 413). |
 | `COLLECTOR_RATE_LIMIT_PER_MIN` | `0` (off) | Per-client-IP ingest rate limit. |
 | `COLLECTOR_PURGE_INTERVAL_SECONDS` | `3600` | Periodic retention purge interval (`0` disables). |
+| `COLLECTOR_CSP` | (built-in) | Override the `Content-Security-Policy` sent with the dashboard. By default a strict policy is built automatically (hashes the SPA's inline bootstrap scripts; allows same-origin XHR/WebSocket + Google Fonts). Set a custom value if the dashboard talks to a **cross-origin** collector (add that origin to `connect-src`); set empty to disable. |
+| `COLLECTOR_CSP_REPORT_ONLY` | (off) | When `1`/`true`, send the policy as `Content-Security-Policy-Report-Only` (reports violations without blocking) — useful to validate a policy before enforcing. |
 | `COLLECTOR_LOG_LEVEL` | `INFO` | Log level. |
 
 ### Authentication

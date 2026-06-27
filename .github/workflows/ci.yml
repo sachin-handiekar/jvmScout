@@ -151,6 +151,36 @@ jobs:
           if-no-files-found: warn
 
   # ---------------------------------------------------------------------------
+  # Dependency vulnerability scanning. pip-audit gates on any finding (the
+  # collector's runtime deps are few and controllable). npm audit gates only on
+  # *critical* production-dependency advisories — the generated frontend tree
+  # carries noisy, often-unfixable transitive "high" advisories, so gating on
+  # those would wedge CI; criticals are the meaningful stop-the-line signal.
+  # ---------------------------------------------------------------------------
+  security-scan:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Audit Python deps (pip-audit)
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip-audit -r collector/requirements.txt --strict
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Audit npm deps (fail on critical)
+        working-directory: frontend
+        run: |
+          npm install --legacy-peer-deps --no-audit --no-fund
+          npm audit --omit=dev --audit-level=critical
+
+  # ---------------------------------------------------------------------------
   # Docker image: validates the multi-stage build (frontend SPA + collector).
   # ---------------------------------------------------------------------------
   docker:
