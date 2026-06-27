@@ -21,9 +21,14 @@ import {
 } from "recharts";
 
 import { supabase } from "@/integrations/supabase/client";
-import { fetchTimeseries } from "@/integrations/collector/client";
+import {
+  fetchTimeseries,
+  fetchEventSeries,
+  isSeriesIncreasing,
+  type EventSeriesResult,
+} from "@/integrations/collector/client";
 import { useAppContext, type TimeRange } from "@/lib/app-context";
-import { compactNumber, relativeTime, sparklineForEvent, isIncreasing } from "@/lib/format";
+import { compactNumber, relativeTime } from "@/lib/format";
 import { Sparkline } from "@/components/events/Sparkline";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -81,13 +86,9 @@ const TYPE_COLOR: Record<EventType, string> = {
   http_error: "#3b82f6",
 };
 
-const TYPES: EventType[] = [
-  "uncaught_exception",
-  "caught_exception",
-  "logged_error",
-  "logged_warning",
-  "http_error",
-];
+// Only the event types the agent actually produces. Log/HTTP taxonomies are not
+// captured today, so they are deliberately absent rather than shown as empty.
+const TYPES: EventType[] = ["uncaught_exception", "caught_exception"];
 
 async function fetchAll() {
   const [events, apps, deployments] = await Promise.all([
@@ -103,16 +104,6 @@ async function fetchAll() {
     apps: apps.data as AppRow[],
     deployments: deployments.data as DeploymentRow[],
   };
-}
-
-// Simple deterministic hash → 0..1
-function hash01(s: string): number {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return (h >>> 0) / 0xffffffff;
 }
 
 function DashboardPage() {
@@ -131,6 +122,19 @@ function DashboardPage() {
     queryFn: () => fetchTimeseries(hours, bucketCount, environment),
   });
 
+  // Real per-fingerprint occurrence counts over the window (drives per-event hit
+  // totals, sparklines, and rising/falling trend — no client-side fabrication).
+  const esQuery = useQuery({
+    queryKey: ["dashboard-event-series", environment, timeRange],
+    queryFn: () => fetchEventSeries(hours, 24, environment),
+  });
+  const eventSeries: EventSeriesResult["series"] = esQuery.data?.series ?? {};
+
+  // Occurrences of an event within the selected window (real, from the collector).
+  const hitsInPeriod = (e: EventRow): number => eventSeries[e.id]?.total ?? 0;
+  const trendUpFor = (e: EventRow): boolean => isSeriesIncreasing(eventSeries[e.id]?.buckets);
+  const sparkFor = (e: EventRow): number[] => eventSeries[e.id]?.buckets ?? [];
+
   const envApps = useMemo(
     () => (query.data?.apps ?? []).filter((a) => a.environment === environment),
     [query.data, environment],
@@ -147,36 +151,25 @@ function DashboardPage() {
     [query.data, envAppIds],
   );
 
-  // Period-scoped events: last_seen in window
+  // Period-scoped events: those with real occurrences in the window (from the
+  // per-fingerprint series), so counts/volume reflect what was actually captured.
   const periodEvents = useMemo(
-    () => envEvents.filter((e) => new Date(e.last_seen).getTime() >= cutoff),
-    [envEvents, cutoff],
+    () => envEvents.filter((e) => (eventSeries[e.id]?.total ?? 0) > 0),
+    [envEvents, eventSeries],
   );
-
-  // "Hits in this period" — deterministically scale hit_count by fraction of event lifetime overlapping window
-  const hitsInPeriod = (e: EventRow): number => {
-    const first = new Date(e.first_seen).getTime();
-    const last = new Date(e.last_seen).getTime();
-    const lifeStart = Math.min(first, last);
-    const lifeEnd = Math.max(last, lifeStart + 1);
-    const overlap = Math.max(0, Math.min(now, lifeEnd) - Math.max(cutoff, lifeStart));
-    const life = lifeEnd - lifeStart || 1;
-    const frac = Math.min(1, overlap / life);
-    return Math.round(e.hit_count * (0.25 + 0.75 * frac));
-  };
 
   const totalEvents = periodEvents.length;
   const totalHits = useMemo(
     () => periodEvents.reduce((sum, e) => sum + hitsInPeriod(e), 0),
-    [periodEvents, cutoff],
+    [periodEvents, eventSeries],
   );
   const newEvents = useMemo(
     () => periodEvents.filter((e) => new Date(e.first_seen).getTime() >= cutoff),
     [periodEvents, cutoff],
   );
   const increasing = useMemo(
-    () => periodEvents.filter((e) => isIncreasing(e.id, e.hit_count)),
-    [periodEvents],
+    () => periodEvents.filter((e) => trendUpFor(e)),
+    [periodEvents, eventSeries],
   );
 
   // Reliability score: 100 - penalty for new/increasing relative to total
@@ -197,9 +190,6 @@ function DashboardPage() {
       label: formatBucketLabel(b.t, hours),
       uncaught_exception: b.uncaught,
       caught_exception: b.caught,
-      logged_error: 0,
-      logged_warning: 0,
-      http_error: 0,
     }));
   }, [tsQuery.data, hours]);
 
@@ -224,7 +214,7 @@ function DashboardPage() {
       [...periodEvents]
         .sort((a, b) => hitsInPeriod(b) - hitsInPeriod(a))
         .slice(0, 6),
-    [periodEvents, cutoff],
+    [periodEvents, eventSeries],
   );
 
   // App health
@@ -495,8 +485,8 @@ function DashboardPage() {
                     </div>
                   </div>
                   <Sparkline
-                    data={sparklineForEvent(e.id, e.hit_count, isIncreasing(e.id, e.hit_count))}
-                    trendUp={isIncreasing(e.id, e.hit_count)}
+                    data={sparkFor(e)}
+                    trendUp={trendUpFor(e)}
                     width={80}
                     height={20}
                   />

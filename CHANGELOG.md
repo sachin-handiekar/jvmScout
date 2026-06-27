@@ -11,6 +11,16 @@ GitHub Release assets.
 ## [Unreleased]
 
 ### Added
+- Alert engine: alert rules created in the UI are now evaluated on ingest and
+  delivered. `new_event`/`deploy_regression`, `volume_threshold`, and
+  `event_reoccurs` triggers are supported, scoped per application/deployment,
+  with Slack/webhook (HTTP) delivery, anti-storm debounce, and `last_triggered_at`
+  written back. (Email/PagerDuty are not delivered in this build and are not
+  marked as triggered.)
+- Real per-fingerprint occurrence time-series (`GET /stats/event-series`) now
+  backs the dashboard's per-event hit totals, sparklines, and rising/falling
+  trend, plus the Applications card sparklines and the Events "increasing"
+  filter — replacing the previous client-side fabricated values.
 - React dashboard (TanStack Start SPA) integrated with the collector via a
   Supabase-compatible adapter over the collector REST/WebSocket; served as
   static assets by the collector. Live updates over `/ws/live`.
@@ -27,6 +37,9 @@ GitHub Release assets.
 
 ### Changed
 - Replaced the vanilla `ui/` with the React `frontend/`.
+- Dashboard/Events event-type taxonomy now lists only the types the agent
+  actually produces (uncaught/caught); the always-empty log/HTTP series were
+  removed for honesty.
 
 ### Fixed
 - BCI shadow-frame depth-counter leak on exceptional unwind (catch-all pop).

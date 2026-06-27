@@ -71,10 +71,12 @@ A Go/Rust rewrite is **not** recommended at this stage:
 
 Detailed status lives in the working notes; headline remaining items:
 
-- **UI honesty:** dashboard KPI cards / sparklines still synthetic (need
-  per-fingerprint time-series); event-type taxonomy lists log/http types the
-  agent can't produce; Alerts/Integrations persist but don't fire (no evaluation
-  engine / notifiers).
+- **UI honesty:** mostly resolved — dashboard/Events/Applications hit counts,
+  sparklines, and trend now come from a real per-fingerprint time-series
+  (`/stats/event-series`); the event-type taxonomy lists only the
+  uncaught/caught types the agent produces; Alerts now fire (evaluation on
+  ingest + Slack/webhook delivery). Remaining: Integrations are still
+  storage-only, and Email/PagerDuty alert channels need real connectors.
 - **Security:** RBAC / token scoping (tokens are all-or-nothing); CSP header on
   the SPA; dependency scanning (pip-audit / npm audit) in CI.
 - **Agent:** JNI local-ref audit under sustained load; collector-down stress
@@ -92,6 +94,8 @@ redaction (agent-side by name + collector-side `redaction_rules`), retention
 purge; agent TLS + retry/requeue, perf (bounded sampling LRU, cheaper REDUCED,
 metric/inspector caching), BCI depth-leak fix + scope config, modified-UTF-8
 JSON, real `environment` dimension, real time-series volume chart; React
-dashboard integrated with the collector + live updates; Alembic + Postgres path;
-CI (agent×3 / bci / collector / frontend / docker), C++ unit tests, release
-workflow, CHANGELOG.
+dashboard integrated with the collector + live updates; real per-fingerprint
+event series behind all hit counts / sparklines / trend; honest event-type
+taxonomy; alert engine (evaluation on ingest + Slack/webhook delivery); Alembic
++ Postgres path; CI (agent×3 / bci / collector / frontend / docker), C++ unit
+tests, release workflow, CHANGELOG.

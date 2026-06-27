@@ -21,42 +21,7 @@ export function relativeTime(iso: string): string {
   return `${Math.floor(mo / 12)}y ago`;
 }
 
-// Deterministic pseudo-random from string (xfnv1a + mulberry32)
-function hashSeed(str: string): number {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-function rng(seed: number) {
-  let s = seed;
-  return () => {
-    s |= 0; s = (s + 0x6D2B79F5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** Build a 24-point sparkline series deterministically from event id + hit_count. */
-export function sparklineForEvent(id: string, hitCount: number, increasing: boolean): number[] {
-  const r = rng(hashSeed(id));
-  const points = 24;
-  const out: number[] = [];
-  const base = Math.max(1, Math.log10(hitCount + 1));
-  for (let i = 0; i < points; i++) {
-    const trend = increasing ? (i / points) * base * 0.8 : 0;
-    out.push(Math.max(0, base * 0.4 + r() * base + trend));
-  }
-  return out;
-}
-
-/** Deterministic "is rate climbing" for an event (mock). */
-export function isIncreasing(id: string, hitCount: number): boolean {
-  // Hash-based, biased to true for higher-traffic events.
-  const h = hashSeed(id);
-  const bias = hitCount > 1000 ? 0.55 : 0.25;
-  return (h % 1000) / 1000 < bias;
-}
+// Per-event sparkline series + rising/falling trend now come from the
+// collector's real per-fingerprint occurrence buckets — see
+// `fetchEventSeries` / `isSeriesIncreasing` in integrations/collector/client.ts.
+// The previous hash-seeded fabrications were removed for honesty.

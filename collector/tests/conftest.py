@@ -51,9 +51,10 @@ def _clean_tables(client):
 
     run_async(_wipe())
     from collector.api import routes
-    from collector import security
+    from collector import security, alerts
     routes.redaction_cache.reset()
     security.token_store.reset()
+    alerts.rule_cache.reset()
     yield
 
 

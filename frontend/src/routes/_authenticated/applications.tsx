@@ -10,7 +10,12 @@ import {
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAppContext } from "@/lib/app-context";
-import { compactNumber, sparklineForEvent } from "@/lib/format";
+import { compactNumber } from "@/lib/format";
+import {
+  fetchEventSeries,
+  isSeriesIncreasing,
+  type EventSeriesResult,
+} from "@/integrations/collector/client";
 import { Sparkline } from "@/components/events/Sparkline";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader, EmptyState } from "@/components/PagePlaceholder";
@@ -120,6 +125,14 @@ function ApplicationsPage() {
   const [envFilter, setEnvFilter] = useState<"all" | AppRow["environment"]>("all");
   const [sort, setSort] = useState<SortKey>("health");
 
+  // Real per-fingerprint occurrence series, aggregated per app for the card
+  // sparkline (24h window) — replaces the previous hash-seeded fake series.
+  const esQuery = useQuery({
+    queryKey: ["applications-series", environment],
+    queryFn: () => fetchEventSeries(24, 24, environment),
+  });
+  const eventSeries: EventSeriesResult["series"] = esQuery.data?.series ?? {};
+
   const { data, isLoading } = useQuery({
     queryKey: ["applications-page"],
     queryFn: async () => {
@@ -159,7 +172,13 @@ function ApplicationsPage() {
             if (d !== 0) return d;
             return new Date(b.last_seen).getTime() - new Date(a.last_seen).getTime();
           })[0];
-        const series = sparklineForEvent(app.id, totalHits + 1, totalHits > 500);
+        // Aggregate the real per-fingerprint buckets across this app's events.
+        const buckets = new Array(24).fill(0);
+        for (const ev of appEvents) {
+          const b = eventSeries[ev.id]?.buckets;
+          if (b) for (let i = 0; i < b.length && i < 24; i++) buckets[i] += b[i];
+        }
+        const windowHits = buckets.reduce((s, n) => s + n, 0);
         return {
           app,
           health: computeAppHealth(appEvents),
@@ -167,7 +186,9 @@ function ApplicationsPage() {
           serverCount: appServers.length,
           offlineServers,
           totalHits,
-          series,
+          series: buckets,
+          trendUp: isSeriesIncreasing(buckets),
+          windowHits,
           worst,
         };
       })
@@ -177,7 +198,7 @@ function ApplicationsPage() {
         const d = healthRank[a.health] - healthRank[b.health];
         return d !== 0 ? d : b.totalHits - a.totalHits;
       });
-  }, [data, environment, envFilter, sort, search]);
+  }, [data, environment, envFilter, sort, search, eventSeries]);
 
   return (
     <>
@@ -280,7 +301,7 @@ function ApplicationsPage() {
                       {c.worst ? c.worst.name : <span className="text-muted-foreground">—</span>}
                     </div>
                   </div>
-                  <Sparkline data={c.series} height={28} trendUp={c.totalHits > 500} />
+                  <Sparkline data={c.series} height={28} trendUp={c.trendUp} />
                 </div>
               </Link>
             ))}

@@ -285,6 +285,88 @@ async def timeseries(*, hours: int, buckets: int,
     return {"hours": hours, "buckets": buckets, "series": series}
 
 
+async def event_series(*, hours: int, buckets: int,
+                       environment: Optional[str] = None) -> dict:
+    """Per-fingerprint bucketed occurrence counts over the last `hours`.
+
+    Returns, for every fingerprint seen in the window, its total occurrences
+    (summed `hit_count`) and a per-bucket array. This is the real data behind the
+    dashboard's per-event hit counts, sparklines, and rising/falling trend — no
+    client-side fabrication. Buckets by collector receive time."""
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(hours=hours)
+    start_iso = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    start_ts = start.timestamp()
+    bucket_s = max(1.0, (hours * 3600.0) / buckets)
+
+    q = select(
+        ExceptionRow.received_at, ExceptionRow.fingerprint, ExceptionRow.hit_count,
+    ).where(ExceptionRow.received_at >= start_iso)
+    if environment:
+        q = q.where(_env_clause(environment))
+
+    async with session() as s:
+        rows = (await s.execute(q)).all()
+
+    series: dict[str, dict] = {}
+    for received_at, fingerprint, hit_count in rows:
+        if not fingerprint:
+            continue
+        try:
+            t = datetime.strptime(received_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc).timestamp()
+        except (ValueError, TypeError):
+            continue
+        idx = int((t - start_ts) / bucket_s)
+        idx = 0 if idx < 0 else (buckets - 1 if idx >= buckets else idx)
+        entry = series.get(fingerprint)
+        if entry is None:
+            entry = {"total": 0, "buckets": [0] * buckets}
+            series[fingerprint] = entry
+        h = hit_count or 1
+        entry["total"] += h
+        entry["buckets"][idx] += h
+
+    return {
+        "hours": hours,
+        "buckets": buckets,
+        "start": int(start_ts * 1000),
+        "bucket_ms": int(bucket_s * 1000),
+        "series": series,
+    }
+
+
+async def count_occurrences(*, minutes: int, deployment_id: Optional[str] = None,
+                            fingerprint: Optional[str] = None,
+                            exception_type: Optional[str] = None,
+                            environment: Optional[str] = None) -> int:
+    """Sum `hit_count` over the last `minutes`, optionally scoped. Used by the
+    alert engine's volume-threshold evaluation."""
+    start = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    start_iso = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    q = select(func.coalesce(func.sum(ExceptionRow.hit_count), 0)).where(
+        ExceptionRow.received_at >= start_iso)
+    if deployment_id:
+        q = q.where(ExceptionRow.deployment_id == deployment_id)
+    if fingerprint:
+        q = q.where(ExceptionRow.fingerprint == fingerprint)
+    if exception_type:
+        q = q.where(ExceptionRow.exception_type == exception_type)
+    if environment:
+        q = q.where(_env_clause(environment))
+    async with session() as s:
+        return int(await s.scalar(q) or 0)
+
+
+async def fingerprint_row_count(fingerprint: str) -> int:
+    """How many stored rows share this fingerprint (1 == first-ever occurrence).
+    Lets the alert engine detect genuinely new exception classes."""
+    async with session() as s:
+        return int(await s.scalar(
+            select(func.count()).select_from(ExceptionRow)
+            .where(ExceptionRow.fingerprint == fingerprint)) or 0)
+
+
 async def list_instances() -> list[dict]:
     async with session() as s:
         rows = (await s.execute(

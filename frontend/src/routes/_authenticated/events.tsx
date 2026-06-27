@@ -17,7 +17,12 @@ import {
 
 import { supabase } from "@/integrations/supabase/client";
 import { useAppContext, type TimeRange } from "@/lib/app-context";
-import { compactNumber, relativeTime, sparklineForEvent, isIncreasing } from "@/lib/format";
+import { compactNumber, relativeTime } from "@/lib/format";
+import {
+  fetchEventSeries,
+  isSeriesIncreasing,
+  type EventSeriesResult,
+} from "@/integrations/collector/client";
 import { Sparkline } from "@/components/events/Sparkline";
 
 import { Input } from "@/components/ui/input";
@@ -44,13 +49,8 @@ type Status = "active" | "resolved" | "hidden";
 
 const SEVERITIES: Severity[] = ["critical", "error", "warning", "info"];
 const STATUSES: Status[] = ["active", "resolved", "hidden"];
-const TYPES: EventType[] = [
-  "uncaught_exception",
-  "caught_exception",
-  "logged_error",
-  "logged_warning",
-  "http_error",
-];
+// Only the event types the agent actually produces (see dashboard).
+const TYPES: EventType[] = ["uncaught_exception", "caught_exception"];
 
 const TYPE_LABEL: Record<EventType, string> = {
   uncaught_exception: "uncaught",
@@ -169,6 +169,15 @@ function EventsPage() {
 
   const query = useQuery({ queryKey: ["events-page"], queryFn: fetchAll });
 
+  // Real per-fingerprint occurrence series (drives the per-row sparkline + the
+  // "increasing" quick filter — no fabricated trend data).
+  const esHours = TIME_HOURS[timeRange] ?? 24;
+  const esQuery = useQuery({
+    queryKey: ["events-series", environment, timeRange],
+    queryFn: () => fetchEventSeries(esHours, 24, environment),
+  });
+  const eventSeries: EventSeriesResult["series"] = esQuery.data?.series ?? {};
+
   const appsById = useMemo(() => {
     const m = new Map<string, AppRow>();
     query.data?.apps.forEach((a) => m.set(a.id, a));
@@ -259,7 +268,7 @@ function EventsPage() {
           );
         }
         if (search.chip === "increasing") {
-          return isIncreasing(e.id, e.hit_count);
+          return isSeriesIncreasing(eventSeries[e.id]?.buckets);
         }
         return true;
       })
@@ -288,6 +297,7 @@ function EventsPage() {
     search.sort,
     search.dir,
     latestDeployByApp,
+    eventSeries,
   ]);
 
   const resetFilters = () =>
@@ -591,8 +601,8 @@ function EventsPage() {
                   const isNew =
                     !!e.introduced_by_deployment_id &&
                     latestDeployByApp.get(e.application_id) === e.introduced_by_deployment_id;
-                  const climbing = isIncreasing(e.id, e.hit_count);
-                  const spark = sparklineForEvent(e.id, e.hit_count, climbing);
+                  const climbing = isSeriesIncreasing(eventSeries[e.id]?.buckets);
+                  const spark = eventSeries[e.id]?.buckets ?? [];
                   const checked = selected.has(e.id);
                   return (
                     <tr

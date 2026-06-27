@@ -12,7 +12,7 @@ from fastapi import (
     APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect,
 )
 
-from .. import redaction, storage
+from .. import alerts, redaction, storage
 from ..config import settings
 from ..models import AgentStartEvent, ExceptionEvent
 from ..security import (
@@ -133,6 +133,8 @@ async def ingest(request: Request) -> dict:
                 ev = ExceptionEvent.model_validate(raw)
                 row_id = await storage.store_exception(ev, raw)
                 await manager.broadcast({"kind": "exception", "id": row_id, "event": raw})
+                # Evaluate alert rules off the ingest path (never blocks/breaks it).
+                alerts.schedule_evaluation(raw)
             accepted += 1
         except Exception:
             failed += 1
@@ -196,6 +198,17 @@ async def get_timeseries(
     return await storage.timeseries(hours=hours, buckets=buckets, environment=environment)
 
 
+@router.get("/stats/event-series")
+async def get_event_series(
+    hours: int = Query(24, ge=1, le=24 * 90),
+    buckets: int = Query(24, ge=1, le=200),
+    environment: Optional[str] = None,
+) -> dict:
+    """Per-fingerprint bucketed occurrence counts (real data behind the
+    dashboard's per-event hit totals, sparklines, and trend)."""
+    return await storage.event_series(hours=hours, buckets=buckets, environment=environment)
+
+
 @router.get("/jvm-info")
 async def jvm_info() -> list[dict]:
     return await storage.list_instances()
@@ -249,7 +262,10 @@ async def create_config(table: str, request: Request) -> dict:
     payload = await _read_json_body(request)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="expected a JSON object")
-    return await storage.insert_config(table, payload)
+    created = await storage.insert_config(table, payload)
+    if table == "alert_rules":
+        alerts.rule_cache.reset()
+    return created
 
 
 @router.patch("/config/{table}/{entity_id}")
@@ -263,6 +279,8 @@ async def patch_config(table: str, entity_id: str, request: Request) -> dict:
         raise HTTPException(status_code=404, detail="not found")
     if table == "api_tokens":
         token_store.reset()  # revocation/edits take effect immediately
+    if table == "alert_rules":
+        alerts.rule_cache.reset()
     return updated
 
 
@@ -273,6 +291,8 @@ async def remove_config(table: str, entity_id: str) -> dict:
         raise HTTPException(status_code=404, detail="not found")
     if table == "api_tokens":
         token_store.reset()
+    if table == "alert_rules":
+        alerts.rule_cache.reset()
     return {"deleted": entity_id}
 
 

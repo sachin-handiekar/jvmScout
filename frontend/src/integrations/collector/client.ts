@@ -167,6 +167,45 @@ export async function fetchTimeseries(
   return res.series ?? [];
 }
 
+export interface FingerprintSeries {
+  total: number;
+  buckets: number[];
+}
+
+export interface EventSeriesResult {
+  start: number; // epoch ms of first bucket
+  bucket_ms: number;
+  series: Record<string, FingerprintSeries>; // keyed by fingerprint
+}
+
+/**
+ * Real per-fingerprint occurrence counts over a window, bucketed for sparklines.
+ * Replaces the client-side fabricated hit/sparkline/trend math on the dashboard.
+ */
+export async function fetchEventSeries(
+  hours: number,
+  buckets: number,
+  environment?: string,
+): Promise<EventSeriesResult> {
+  const params = new URLSearchParams({ hours: String(hours), buckets: String(buckets) });
+  if (environment) params.set("environment", environment);
+  const res = await http<EventSeriesResult>(`/stats/event-series?${params.toString()}`);
+  return { start: res.start, bucket_ms: res.bucket_ms, series: res.series ?? {} };
+}
+
+/** True if a bucketed series is trending up (later half outweighs the earlier). */
+export function isSeriesIncreasing(buckets: number[] | undefined): boolean {
+  if (!buckets || buckets.length < 2) return false;
+  const mid = Math.floor(buckets.length / 2);
+  let first = 0;
+  let last = 0;
+  for (let i = 0; i < buckets.length; i++) {
+    if (i < mid) first += buckets[i];
+    else last += buckets[i];
+  }
+  return last > 0 && last > first * 1.2;
+}
+
 /**
  * Validate the current API key against an auth-gated endpoint.
  * Returns true if the collector accepts the request (including the case where
