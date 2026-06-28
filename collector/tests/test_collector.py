@@ -120,6 +120,29 @@ def test_delete_all_requires_confirm(client):
     assert client.get("/exceptions", headers=AUTH).json()["total"] == 0
 
 
+def test_admin_reset_wipes_all_data(client):
+    # Seed an exception and a JVM instance.
+    client.post("/collector", json=exception_event(), headers=AUTH)
+    client.post("/collector", json=agent_start_event(), headers=AUTH)
+    assert client.get("/exceptions", headers=AUTH).json()["total"] == 1
+    assert len(client.get("/jvm-instances", headers=AUTH).json()) == 1
+
+    # Without confirm: refused, nothing deleted.
+    assert client.delete("/admin/data", headers=AUTH).status_code == 400
+    assert client.get("/exceptions", headers=AUTH).json()["total"] == 1
+
+    r = client.delete("/admin/data", params={"confirm": "true"}, headers=AUTH)
+    assert r.status_code == 200
+    deleted = r.json()["deleted"]
+    assert deleted["exceptions"] == 1
+    assert deleted["instances"] == 1
+    assert deleted["source_classes"] == 0
+
+    # All captured data is gone.
+    assert client.get("/exceptions", headers=AUTH).json()["total"] == 0
+    assert client.get("/jvm-instances", headers=AUTH).json() == []
+
+
 # --- api tokens (per-token auth) -------------------------------------------
 
 def test_issued_token_grants_access(client):

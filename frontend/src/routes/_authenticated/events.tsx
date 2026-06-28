@@ -104,7 +104,7 @@ const toggleCsv = (csv: string, value: string) => {
 };
 
 export const Route = createFileRoute("/_authenticated/events")({
-  head: () => ({ meta: [{ title: "Events — Stackline" }] }),
+  head: () => ({ meta: [{ title: "Events — jvmScout" }] }),
   validateSearch: zodValidator(searchSchema),
   component: EventsRoute,
 });

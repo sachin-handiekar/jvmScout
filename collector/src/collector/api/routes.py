@@ -237,6 +237,32 @@ async def delete_all(confirm: bool = Query(False),
     return {"deleted": n}
 
 
+@router.delete("/admin/data")
+async def delete_all_data(confirm: bool = Query(False),
+                          principal: Principal = Depends(require_admin)) -> dict:
+    """Admin reset: wipe ALL captured monitoring data for the caller's tenant —
+    exceptions/events, JVM instances (agents), and decompiler source classes.
+    Configuration (tokens, redaction rules, integrations, team) is left intact.
+    Destructive: requires an explicit ?confirm=true. Scoped to the admin's
+    project; the master key clears every project's data."""
+    if not confirm:
+        raise HTTPException(
+            status_code=400, detail="pass ?confirm=true to delete all data")
+    scope = principal.scope
+    exceptions = await storage.delete_all_exceptions(project_id=scope)
+    instances = await storage.delete_all_instances(project_id=scope)
+    source_classes = await storage.delete_all_source_classes(project_id=scope)
+    log.warning("admin data reset by project=%s: %d exceptions, %d instances, "
+                "%d source classes", scope, exceptions, instances, source_classes)
+    return {
+        "deleted": {
+            "exceptions": exceptions,
+            "instances": instances,
+            "source_classes": source_classes,
+        },
+    }
+
+
 @router.get("/stats")
 async def get_stats(principal: Principal = Depends(require_read)) -> dict:
     return await storage.stats(project_id=principal.scope)

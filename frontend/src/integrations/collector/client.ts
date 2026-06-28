@@ -503,6 +503,19 @@ export async function createApiToken(
   });
 }
 
+export interface ResetDataResult {
+  deleted: { exceptions: number; instances: number; source_classes: number };
+}
+
+/**
+ * Admin reset: permanently delete all captured monitoring data (events,
+ * JVM instances, decompiler source classes) for the caller's tenant. Requires
+ * an admin API key; configuration (tokens, rules, team) is left untouched.
+ */
+export async function resetAllData(): Promise<ResetDataResult> {
+  return http<ResetDataResult>(`/admin/data?confirm=true`, { method: "DELETE" });
+}
+
 /** Live event stream over the collector WebSocket. */
 export function connectLiveSocket(onMessage: (msg: any) => void): WebSocket | null {
   try {

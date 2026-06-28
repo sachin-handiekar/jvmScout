@@ -43,7 +43,7 @@ const searchSchema = z.object({
 
 export const Route = createFileRoute("/_authenticated/events/$id")({
   validateSearch: zodValidator(searchSchema),
-  head: () => ({ meta: [{ title: "Event — Stackline" }] }),
+  head: () => ({ meta: [{ title: "Event — jvmScout" }] }),
   component: EventDetailPage,
   errorComponent: ({ error }) => (
     <div className="p-6 text-sm text-destructive">Failed to load event: {error.message}</div>

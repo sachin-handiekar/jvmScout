@@ -30,7 +30,7 @@ import {
 } from "./deployments";
 
 export const Route = createFileRoute("/_authenticated/deployments/$id")({
-  head: () => ({ meta: [{ title: "Deployment — Stackline" }] }),
+  head: () => ({ meta: [{ title: "Deployment — jvmScout" }] }),
   component: DeploymentDetailPage,
 });
 

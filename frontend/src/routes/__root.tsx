@@ -81,10 +81,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Stackline — Continuous JVM Reliability" },
+      { title: "jvmScout — Continuous JVM Reliability" },
       { name: "description", content: "Production debugger for Java services: see the exact code and variable state behind every error." },
-      { name: "author", content: "Stackline" },
-      { property: "og:title", content: "Stackline — Continuous JVM Reliability" },
+      { name: "author", content: "jvmScout" },
+      { property: "og:title", content: "jvmScout — Continuous JVM Reliability" },
       { property: "og:description", content: "Production debugger for Java services." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },

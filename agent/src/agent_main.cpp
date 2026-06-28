@@ -121,7 +121,14 @@ void set_agent_context(AgentContext* ctx) { g_ctx = ctx; }
 
 extern "C" JNIEXPORT jint JNICALL
 Agent_OnLoad(JavaVM* vm, char* options, void* /*reserved*/) {
-    AgentConfig cfg = parse_config(options);
+    std::string config_path;
+    AgentConfig cfg = build_config(options, &config_path);
+    if (config_path.empty()) {
+        std::fprintf(stdout, "[jvmti-agent] config: no settings file found "
+                             "(using -agentpath options + JVMSCOUT_* env)\n");
+    } else {
+        std::fprintf(stdout, "[jvmti-agent] config: loaded %s\n", config_path.c_str());
+    }
     if (cfg.instance_id.empty()) cfg.instance_id = platform::generate_uuid();
 
     auto ctx = std::make_unique<AgentContext>(std::move(cfg));

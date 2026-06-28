@@ -81,6 +81,13 @@ endif()
 option(AGENT_BUILD_TESTS "Build the agent unit tests" ON)
 if(AGENT_BUILD_TESTS)
   enable_testing()
+  # config.cpp's settings-file lookup calls platform::this_library_path(), so the
+  # matching platform shim is linked in (it only uses default system libraries).
+  if(WIN32)
+    set(TEST_PLATFORM_SOURCES src/platform/platform_win.cpp)
+  else()
+    set(TEST_PLATFORM_SOURCES src/platform/platform_posix.cpp)
+  endif()
   add_executable(agent_tests
     tests/agent_tests.cpp
     src/fingerprint.cpp
@@ -89,6 +96,7 @@ if(AGENT_BUILD_TESTS)
     src/json_utils.cpp
     src/config.cpp
     src/async_queue.cpp
+    ${TEST_PLATFORM_SOURCES}
   )
   target_include_directories(agent_tests PRIVATE include)
   find_package(Threads REQUIRED)

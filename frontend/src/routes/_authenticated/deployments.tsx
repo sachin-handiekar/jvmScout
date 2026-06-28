@@ -10,7 +10,7 @@ import { PageHeader } from "@/components/PagePlaceholder";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/deployments")({
-  head: () => ({ meta: [{ title: "Deployments — Stackline" }] }),
+  head: () => ({ meta: [{ title: "Deployments — jvmScout" }] }),
   component: DeploymentsPage,
 });
 

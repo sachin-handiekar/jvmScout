@@ -50,8 +50,31 @@ struct AgentConfig {
 };
 
 // Parse the raw -agentpath option string into an AgentConfig, applying defaults
-// (including the built-in deny/location_deny/redact_props pattern sets).
+// (including the built-in deny/location_deny/redact_props pattern sets). This is
+// the low-level "defaults + option string only" path, kept for tests and as the
+// final (highest-precedence) layer of build_config.
 AgentConfig parse_config(const char* options);
+
+// Build the effective configuration the agent runs with, layering sources from
+// lowest to highest precedence:
+//   1. built-in defaults
+//   2. the YAML settings file (jvmscout.yaml) if one is found
+//   3. JVMSCOUT_<UPPER_KEY> environment variables (e.g. JVMSCOUT_API_KEY)
+//   4. the -agentpath option string (key=val,...) — most explicit, wins
+// The settings file is located via: a `config=` option key, then `home=` option
+// key, then the JVMSCOUT_CONFIG / JVMSCOUT_HOME environment variables, then the
+// directory of the loaded agent library; the file name is jvmscout.yaml (or .yml).
+// When no file is found the agent runs purely off env + option string (the
+// historical behaviour), so existing -agentpath command lines keep working.
+// `loaded_path`, if non-null, receives the settings file actually loaded (empty
+// if none) so the caller can log the configuration source.
+AgentConfig build_config(const char* options, std::string* loaded_path = nullptr);
+
+// Apply a restricted-subset YAML document (top-level `key: value` scalars, block
+// sequences of `- item`, and inline `[a, b]` flow sequences; `#` comments) onto an
+// existing config. Exposed for unit testing. Not a full YAML parser — nested maps,
+// multi-doc, anchors, and multiline scalars are intentionally unsupported.
+void parse_yaml_config(const std::string& text, AgentConfig& cfg);
 
 // True if `name` contains any of `patterns` (case-insensitive substring). Used
 // to decide whether a captured value (by variable/property/env name) should be

@@ -261,6 +261,24 @@ async def delete_all_exceptions(project_id: Optional[str] = None) -> int:
         return result.rowcount or 0
 
 
+async def delete_all_instances(project_id: Optional[str] = None) -> int:
+    async with session() as s:
+        stmt = _apply_project(
+            delete(JvmInstanceRow), project_id, JvmInstanceRow.project_id)
+        result = await s.execute(stmt)
+        await s.commit()
+        return result.rowcount or 0
+
+
+async def delete_all_source_classes(project_id: Optional[str] = None) -> int:
+    async with session() as s:
+        stmt = _apply_project(
+            delete(SourceClassRow), project_id, SourceClassRow.project_id)
+        result = await s.execute(stmt)
+        await s.commit()
+        return result.rowcount or 0
+
+
 async def stats(project_id: Optional[str] = None) -> dict:
     def scoped(q):
         return _apply_project(q, project_id, ExceptionRow.project_id)
