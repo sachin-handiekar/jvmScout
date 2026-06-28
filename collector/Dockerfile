@@ -30,6 +30,19 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app/collector
 
+# Headless JRE + CFR decompiler: powers the dashboard's per-frame source view
+# (the agent ships app-class bytecode; the collector decompiles it on demand).
+# Pinned CFR release from Maven Central. Source view degrades to "No source
+# available" if this layer is removed.
+ARG CFR_VERSION=0.152
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends default-jre-headless curl \
+    && curl -fsSL -o /app/cfr.jar \
+       "https://repo1.maven.org/maven2/org/benf/cfr/${CFR_VERSION}/cfr-${CFR_VERSION}.jar" \
+    && apt-get purge -y curl && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+ENV COLLECTOR_DECOMPILER_JAR=/app/cfr.jar
+
 # Dependencies first for layer caching.
 COPY collector/requirements.txt ./requirements.txt
 RUN pip install -r requirements.txt

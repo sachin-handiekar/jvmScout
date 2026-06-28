@@ -60,7 +60,7 @@ INSERT INTO public.redaction_rules (kind, name, value, enabled) VALUES
   ('identifier','Auth headers','authorization',false);
 
 INSERT INTO public.team_members (email, name, role, status) VALUES
-  ('alex@stackline.dev','Alex Chen','admin','active'),
-  ('jordan@stackline.dev','Jordan Park','member','active'),
-  ('sam@stackline.dev','Sam Rivera','viewer','active'),
-  ('pat@stackline.dev','Pat Morgan','member','invited');
+  ('alex@jvmscout.dev','Alex Chen','admin','active'),
+  ('jordan@jvmscout.dev','Jordan Park','member','active'),
+  ('sam@jvmscout.dev','Sam Rivera','viewer','active'),
+  ('pat@jvmscout.dev','Pat Morgan','member','invited');

@@ -30,7 +30,7 @@ import {
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/applications")({
-  head: () => ({ meta: [{ title: "Applications — Stackline" }] }),
+  head: () => ({ meta: [{ title: "Applications — jvmScout" }] }),
   component: ApplicationsRoute,
 });
 
@@ -252,7 +252,7 @@ function ApplicationsPage() {
           <EmptyState
             icon={Boxes}
             title="No applications reporting yet"
-            hint="Install an agent to start streaming errors into Stackline."
+            hint="Install an agent to start streaming errors into jvmScout."
           />
         )}
         {!isLoading && cards.length > 0 && (

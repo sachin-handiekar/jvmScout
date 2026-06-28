@@ -22,7 +22,7 @@ import { computeDeltas, HitDelta, DeployBadge } from "./deployments";
 import { useAppContext } from "@/lib/app-context";
 
 export const Route = createFileRoute("/_authenticated/applications/$id")({
-  head: () => ({ meta: [{ title: "Application — Stackline" }] }),
+  head: () => ({ meta: [{ title: "Application — jvmScout" }] }),
   component: ApplicationDetailPage,
 });
 

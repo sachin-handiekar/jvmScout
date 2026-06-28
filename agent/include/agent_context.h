@@ -11,6 +11,7 @@
 #include "sampling.h"
 #include "object_inspector.h"
 #include "bci_shadow.h"
+#include "source_cache.h"
 
 // Dependency-injection container: owns every long-lived collaborator and is
 // reachable from the JVMTI callbacks via a single global pointer set in
@@ -27,6 +28,7 @@ struct AgentContext {
     std::unique_ptr<ObjectInspector> inspector;
     Sampler sampler;
     BciShadow shadow;
+    SourceCache source_cache;  // original app-class bytes for decompiled source view
 
     // Resolved once at VM_INIT when bci=true (global ref + static transform id).
     jclass bci_transformer_class = nullptr;

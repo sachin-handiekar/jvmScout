@@ -1,6 +1,6 @@
 # jvmScout — Project Analysis
 
-A self-hosted, OverOps-style **runtime exception monitoring platform for the JVM**.
+A self-hosted **runtime exception monitoring platform for the JVM**.
 A native JVMTI agent hooks every exception thrown inside a target JVM, captures rich
 diagnostic context (stack frames, *local variable values*, cause chain, JVM metrics),
 and ships it over HTTP to a Python collector that persists events and serves a live web

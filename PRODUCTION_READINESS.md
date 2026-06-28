@@ -125,8 +125,7 @@ ProductHunt visitors decide in ~30 seconds. The README and a demo carry the laun
 - [ ] 🟢 **Landing page** (GitHub Pages is fine): hero, 3 feature cards, screenshots, "get
       started," link to repo + ProductHunt.
 - [ ] 🟢 **Docs site or `/docs` folder:** configuration reference (every `-agentpath` key),
-      architecture overview, FAQ, troubleshooting, comparison to alternatives (OverOps,
-      Sentry, Datadog Error Tracking) — honest about what jvmScout is and isn't
+      architecture overview, FAQ, troubleshooting, comparison to alternatives (Sentry, Datadog Error Tracking) — honest about what jvmScout is and isn't
       (self-hosted, JVM-focused, captures locals).
 - [ ] 🟢 **Performance numbers.** Run the planned microbenchmark (tight loop throwing ~1M
       caught exceptions with/without the agent) and publish the overhead ratio. Credible,

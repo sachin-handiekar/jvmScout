@@ -1,20 +1,124 @@
-# jvmScout
+<div align="center">
 
-**JVMTI exception monitoring for the JVM.** An OverOps-style runtime error monitor: a native JVMTI agent captures every JVM
-exception with full diagnostic context (stack frames, local variable values,
-cause chain, JVM metrics) and POSTs it to a Python collector, which persists it
-and serves a live web dashboard.
+# 🛰️ jvmScout
+
+**Runtime exception monitoring for the JVM, powered by JVMTI.**
+
+A native JVMTI agent captures *every* JVM exception with full diagnostic context —
+stack frames, **live local-variable values**, cause chain, and JVM metrics — and
+streams it to a Python collector that persists it and serves a live web dashboard.
+
+<!-- Build & release -->
+[![CI](https://github.com/sachin-handiekar/jvmScout/actions/workflows/ci.yml/badge.svg)](https://github.com/sachin-handiekar/jvmScout/actions/workflows/ci.yml)
+[![Release](https://github.com/sachin-handiekar/jvmScout/actions/workflows/release.yml/badge.svg)](https://github.com/sachin-handiekar/jvmScout/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![GHCR](https://img.shields.io/badge/ghcr.io-jvmscout--collector-2496ED?logo=docker&logoColor=white)](https://github.com/sachin-handiekar/jvmScout/pkgs/container/jvmscout-collector)
+
+<!-- Stack -->
+![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
+![Java](https://img.shields.io/badge/Java-24%2B-ED8B00?logo=openjdk&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)
+
+<!-- Platforms -->
+![Windows](https://img.shields.io/badge/Windows-.dll-0078D6?logo=windows&logoColor=white)
+![Linux](https://img.shields.io/badge/Linux-.so-FCC624?logo=linux&logoColor=black)
+![macOS](https://img.shields.io/badge/macOS-.dylib-000000?logo=apple&logoColor=white)
+
+[Quickstart](#-quickstart-docker) · [Build](#-build--run) · [Configuration](#-agent-configuration) · [Source View](#-source-view-decompiled) · [Architecture](#-architecture) · [Roadmap](ROADMAP.md)
+
+</div>
+
+---
+
+## 📋 Table of Contents
+
+- [Why jvmScout?](#-why-jvmscout)
+- [Screenshots](#-screenshots)
+- [Architecture](#-architecture)
+- [Components](#-components)
+- [Quickstart (Docker)](#-quickstart-docker)
+- [Prerequisites](#-prerequisites)
+- [Build & run](#-build--run)
+- [Configuration via JVMSCOUT_HOME](#-configuration-via-jvmscout_home-settings-file)
+- [Agent configuration](#-agent-configuration)
+- [Collector configuration](#-collector-configuration-env-vars)
+- [Authentication](#authentication)
+- [Multiple apps & teams](#multiple-apps--teams-projects-scoped-tokens)
+- [Source view (decompiled)](#-source-view-decompiled)
+- [Local-variable capture](#-how-local-variable-capture-works)
+- [Database & migrations](#-database--migrations)
+- [Redaction](#-redaction)
+- [Alerts](#-alerts)
+- [Verified](#-verified)
+- [Contributing](#-contributing)
+- [License](#-license)
+
+## 💡 Why jvmScout?
+
+Most error monitors need you to wire a logging library into your app and only see
+what you remembered to log. jvmScout attaches to the JVM itself as a native JVMTI
+agent — **no code changes, no SDK, no recompile** — and observes exceptions at the
+source. For each throw it captures:
+
+- ✅ Exception **type, message, line, and a stable fingerprint** for grouping
+- ✅ The full **stack trace** with per-frame **local-variable values** (via the JVMTI
+  Local Variable Table, or via bytecode shadow-capture when classes lack `-g`)
+- ✅ The **cause chain**, JVM metrics, environment/deployment tags, and instance identity
+- ✅ Optional **decompiled source** for each app frame, reconstructed from bytecode
+- ✅ Adaptive sampling (`FULL → REDUCED → COUNT_ONLY`) so a storm of errors never
+  overwhelms the collector
+
+It ships as a single cross-platform agent (Windows `.dll`, Linux `.so`, macOS
+`.dylib`), a multi-tenant collector with scoped API tokens, redaction, and alert
+rules, and a live React dashboard.
+
+## 📸 Screenshots
+
+> ⚠️ **Placeholder images** — replace the files in [`docs/screenshots/`](docs/screenshots/)
+> with real captures. See [`docs/screenshots/README.md`](docs/screenshots/README.md) for the expected filenames.
+
+<div align="center">
+
+| Dashboard | Event detail |
+|:---:|:---:|
+| [![Dashboard](docs/screenshots/dashboard.png)](docs/screenshots/dashboard.png) | [![Event detail](docs/screenshots/event-detail.png)](docs/screenshots/event-detail.png) |
+| **Decompiled source view** | **Alerts** |
+| [![Source view](docs/screenshots/source-view.png)](docs/screenshots/source-view.png) | [![Alerts](docs/screenshots/alerts.png)](docs/screenshots/alerts.png) |
+
+</div>
+
+## 🏗️ Architecture
 
 ```
-Target JVM ── JVMTI native agent ──HTTP POST──> Python collector ──REST/WS──> Web UI
-                     │
-                     └── (optional) BCI transformer JAR injected via ClassFileLoadHook
+                ┌──────────────────────── Target JVM ────────────────────────┐
+                │                                                             │
+                │   Application code                                          │
+                │        │ throws                                             │
+                │        ▼                                                    │
+                │   JVMTI native agent ──┐                                    │
+                │        │               │ (optional) BCI transformer JAR     │
+                │        │               └── injected via ClassFileLoadHook   │
+                └────────┼────────────────────────────────────────────────────┘
+                         │ HTTP POST (batched, async)
+                         ▼
+                ┌─────────────────────────┐         ┌────────────────────┐
+                │   Python collector      │◄───────►│  SQLite / Postgres │
+                │   (FastAPI, async)      │         └────────────────────┘
+                │   REST + WebSocket      │
+                └────────────┬────────────┘
+                             │ serves SPA + live data
+                             ▼
+                    ┌────────────────┐
+                    │  React dashboard│
+                    └────────────────┘
 ```
 
 See [PLAN.md](PLAN.md) for the full design and [NOTES.md](NOTES.md) for the
 authoritative component blueprints.
 
-## Components
+## 🧩 Components
 
 | Component | Tech | Folder |
 |---|---|---|
@@ -28,20 +132,20 @@ The agent ships as a shared library for **Windows (`.dll`), Linux (`.so`), and
 macOS (`.dylib`)** from one codebase; OS-specific HTTP transport and platform
 shims sit behind interfaces.
 
-## Quickstart (Docker)
+## 🚀 Quickstart (Docker)
 
 The collector **and** dashboard ship as a single image. Pull the published
 image and run it (no build toolchain needed):
 
 ```bash
 docker run -p 8080:8080 -v jvmscout-data:/data \
-  ghcr.io/<owner>/jvmscout-collector:latest
+  ghcr.io/sachin-handiekar/jvmscout-collector:latest
 # dashboard -> http://localhost:8080
 ```
 
-Replace `<owner>` with the repository owner; use `:latest` for the most recent
-release, `:edge` for the latest `main` build, or a specific `:X.Y.Z`. The images
-are built and published by the CI/release workflows.
+Use `:latest` for the most recent release, `:edge` for the latest `main` build,
+or a specific `:X.Y.Z`. The images are built and published by the CI/release
+workflows.
 
 Or build + run locally from source:
 
@@ -53,7 +157,7 @@ Either way, then build the native agent (below) and point a host JVM at
 `host=localhost,port=8080`. The SQLite database persists in the `jvmscout-data`
 volume.
 
-## Prerequisites
+## ✅ Prerequisites
 
 - A C++17 compiler (MSVC, GCC, or Clang) and **CMake ≥ 3.20**
 - **JDK 24+** (required for the `bci=true` path; core capture works on any
@@ -61,7 +165,7 @@ volume.
 - On Linux/macOS: libcurl development headers (`libcurl4-openssl-dev` / Homebrew `curl`)
 - **Python 3.10+** for the collector
 
-## Build & run
+## 🔧 Build & run
 
 ```bash
 # 1. Build the BCI transformer jar and place it next to the agent library
@@ -115,9 +219,73 @@ is left empty and no CORS config is needed. The dashboard prompts for the
 collector API key (`COLLECTOR_API_KEY`) on first load and stores it locally;
 leave it blank when the collector runs unauthenticated.
 
-## Agent configuration
+## 🏠 Configuration via `JVMSCOUT_HOME` (settings file)
 
-Passed as `-agentpath:<library>=key=val,key=val,...`
+For anything beyond a quick demo, **don't** pack settings into the `-agentpath`
+string — it's brittle and leaks secrets like `api_key` into process listings
+(`ps`). Instead, point an environment variable at an **install home directory**
+that holds the library, the transformer jar, and a `jvmscout.yaml` settings file
+(OverOps-style). The JVM flag then shrinks to just *"load the library"*:
+
+```
+$JVMSCOUT_HOME/
+  jvmscout.yaml              # all settings (keys below)
+  lib/
+    libjvmti-agent.so        # | jvmti-agent.dll | libjvmti-agent.dylib
+    bci-transform.jar        # auto-found next to the library
+```
+
+```bash
+export JVMSCOUT_HOME=/opt/jvmscout
+java -agentpath:$JVMSCOUT_HOME/lib/libjvmti-agent.so -jar your-app.jar
+```
+
+Example `jvmscout.yaml` (every key from the [table below](#-agent-configuration)
+is valid; lists are YAML block or flow sequences):
+
+```yaml
+host: collector.internal
+port: 8080
+# Prefer the JVMSCOUT_API_KEY env var over putting the secret on disk;
+# if you do store it here, chmod 600 the file.
+api_key: stk_abc123
+deployment: checkout
+environment: production
+bci: true
+bci_packages:
+  - com.acme
+  - com.acme.payments
+redact_props: [ssn, cardNumber]
+```
+
+**Precedence** (lowest → highest), so you can keep shared settings in the file and
+override per-host or per-JVM:
+
+| Layer | Source | Typical use |
+|---|---|---|
+| 1 | Built-in defaults | denylists, redaction patterns |
+| 2 | `jvmscout.yaml` | the shared, version-controlled config |
+| 3 | `JVMSCOUT_<KEY>` env vars (e.g. `JVMSCOUT_API_KEY`, `JVMSCOUT_DEPLOYMENT`) | secrets & per-host values |
+| 4 | `-agentpath` inline `key=val` | per-JVM overrides (most explicit, wins) |
+
+The settings file is located via the `config=`/`home=` agentpath keys, then the
+`JVMSCOUT_CONFIG` / `JVMSCOUT_HOME` env vars, then the directory of the loaded
+library (so `jvmscout.yaml` sitting next to the `.so/.dll` is picked up
+automatically). If no file is found the agent runs purely off env + agentpath —
+so **existing `-agentpath:...=k=v,...` command lines keep working unchanged**.
+
+The agent logs its config source on startup, e.g.
+`[jvmti-agent] config: loaded /opt/jvmscout/jvmscout.yaml`.
+
+> The YAML reader is a small flat-schema parser (scalars, `- item` block
+> sequences, `[a, b]` flow sequences, `#` comments) — nested maps/anchors aren't
+> needed and aren't supported.
+
+## ⚙️ Agent configuration
+
+Settings can be supplied inline as `-agentpath:<library>=key=val,key=val,...` **or**
+(recommended) via `jvmscout.yaml` / `JVMSCOUT_*` env vars — the key names below are
+identical across all three.
 
 | Key | Default | Purpose |
 |---|---|---|
@@ -138,11 +306,14 @@ Passed as `-agentpath:<library>=key=val,key=val,...`
 | `bci_packages` | (empty) | BCI allowlist (`;`-separated package prefixes, dot or slash form). When set, only matching classes are instrumented. |
 | `bci_exclude` | (empty) | BCI denylist (`;`-separated prefixes); matching classes are never instrumented. Applied on top of the transformer's built-in JDK/framework excludes. |
 | `bci_verbose` | `false` | Log per-class BCI instrument/skip decisions. |
+| `source` | `false` | Capture original app-class bytecode and ship it so the collector can show **decompiled source** per stack frame. Read-only (never rewrites bytecode, unlike `bci`), so it can't break a class. `bci=true` also enables capture. |
 | `instance_id` | auto UUID | JVM instance identity |
 | `env_capture` | (empty) | Env-var glob patterns to capture |
 | `redact_props` | 7 patterns | Sensitive keys to redact |
+| `home` | (see above) | Override the install home dir used to find `jvmscout.yaml` (option-string/env only) |
+| `config` | (see above) | Explicit path to the settings file (option-string/env only) |
 
-## Collector configuration (env vars)
+## 🗄️ Collector configuration (env vars)
 
 | Env var | Default | Purpose |
 |---|---|---|
@@ -156,6 +327,7 @@ Passed as `-agentpath:<library>=key=val,key=val,...`
 | `COLLECTOR_PURGE_INTERVAL_SECONDS` | `3600` | Periodic retention purge interval (`0` disables). |
 | `COLLECTOR_CSP` | (built-in) | Override the `Content-Security-Policy` sent with the dashboard. By default a strict policy is built automatically (hashes the SPA's inline bootstrap scripts; allows same-origin XHR/WebSocket + Google Fonts). Set a custom value if the dashboard talks to a **cross-origin** collector (add that origin to `connect-src`); set empty to disable. |
 | `COLLECTOR_CSP_REPORT_ONLY` | (off) | When `1`/`true`, send the policy as `Content-Security-Policy-Report-Only` (reports violations without blocking) — useful to validate a policy before enforcing. |
+| `COLLECTOR_DECOMPILER_JAR` | (auto) | Path to the CFR decompiler jar used for the **source view**. The Docker image bundles it (`/app/cfr.jar`) with a headless JRE; for local dev, download CFR and point this at it (and have `java` on PATH / `JAVA_HOME` set). Absent ⇒ source view shows "No source available". |
 | `COLLECTOR_LOG_LEVEL` | `INFO` | Log level. |
 
 ### Authentication
@@ -213,7 +385,25 @@ Alert rules, redaction rules, and other config are also **per-project**: an
 admin manages only their own project's rules, and they apply only to that
 project's events. The master key manages every project.
 
-## How local-variable capture works
+## 🔍 Source view (decompiled)
+
+The dashboard shows the source of each app frame in a stack trace. A JVMTI agent
+has no source — only bytecode — so:
+
+1. Run the agent with **`source=true`** (or `bci=true`). It captures the original
+   bytecode of app classes (read-only — it never rewrites them) and ships each
+   class once to the collector.
+2. The collector **decompiles** that bytecode on demand (bundled CFR + a headless
+   JRE in the Docker image) and attaches the throwing method's source to each
+   frame. Classes compiled with `-g` (Maven's default) keep their real parameter
+   and local-variable names.
+
+No application source is uploaded or stored — only bytecode, which the collector
+already needs nothing else to reconstruct. Decompiled code is faithful but not
+identical to the original (names/layout can differ), so it's labelled as
+decompiled and shows the method that threw rather than a pixel-exact line.
+
+## 🧠 How local-variable capture works
 
 - **With `-g`** (debug info): the agent reads locals directly from the JVMTI
   Local Variable Table (`source: "debug_info"`) — names, signatures, values.
@@ -221,7 +411,7 @@ project's events. The master key manages every project.
   injects shadow-capture calls so the agent recovers local *values* by slot
   (`source: "bci_shadow"`); the UI marks these with a ● badge.
 
-## Database & migrations
+## 🛢️ Database & migrations
 
 The collector uses SQLAlchemy (async) and ships with **SQLite** by default
 (`sqlite+aiosqlite:///./collector.db`). Schema is managed with **Alembic**.
@@ -256,7 +446,7 @@ Postgres is recommended once you outgrow a single process: the in-memory
 WebSocket fan-out and rate-limiter are per-process, so horizontal scaling also
 needs shared infrastructure for those (not yet built).
 
-## Redaction
+## 🛡️ Redaction
 
 Two layers, defense in depth:
 
@@ -270,7 +460,7 @@ Two layers, defense in depth:
   - **identifier** rules mask a local whose name matches;
   - **pattern** rules mask any value matching a regex (e.g. card numbers, JWTs).
 
-## Alerts
+## 🔔 Alerts
 
 The dashboard's **Alerts** screen defines rules that the collector evaluates on
 every ingested exception (off the ingest path, so alerting never blocks or
@@ -284,7 +474,7 @@ breaks capture) and delivers when they match:
   build doesn't ship, so they are logged and **not** marked as triggered.
 - **Per-project:** an admin's rules apply only to their own project's events.
 
-## Verified
+## 🧪 Verified
 
 Built and exercised on Windows with JDK 26, GCC (MinGW-w64) + CMake/Ninja, and
 Python 3.14: agent load, exception capture (type/message/line/fingerprint),
@@ -295,3 +485,15 @@ multi-tenant project/role scoping, redaction, alerts, time-series, and config;
 the agent has C++ unit tests (incl. a collector-down/queue stress test). CI also
 builds the agent on Linux/macOS/Windows — but the libcurl transport has not yet
 been exercised end-to-end on Linux/macOS.
+
+## 🤝 Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[Code of Conduct](CODE_OF_CONDUCT.md) before opening a pull request. Security
+issues should follow the process in [SECURITY.md](SECURITY.md). The
+[ROADMAP.md](ROADMAP.md) and [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)
+documents track what's planned and what's left before launch.
+
+## 📄 License
+
+Released under the [MIT License](LICENSE) — © 2026 The jvmScout Authors.

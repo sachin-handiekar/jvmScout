@@ -47,6 +47,7 @@ def _clean_tables(client):
             await s.execute(delete(storage.ExceptionRow))
             await s.execute(delete(storage.JvmInstanceRow))
             await s.execute(delete(storage.ConfigEntityRow))
+            await s.execute(delete(storage.SourceClassRow))
             await s.commit()
 
     run_async(_wipe())

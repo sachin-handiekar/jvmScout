@@ -9,6 +9,9 @@ agent/build/
 # Java / Maven
 *.class
 target/
+# Build artifact: the BCI transformer jar (built from bci-classfile/ by CI /
+# `javac` + `jar`, copied next to the agent at runtime). Kept locally, untracked.
+*.jar
 
 # Python
 __pycache__/
@@ -23,3 +26,7 @@ node_modules/
 # Editors
 .idea/
 .vscode/
+
+# Historical per-component review snapshots (Jun 2026) — superseded by
+# ROADMAP.md / PRODUCTION_READINESS.md; kept locally, untracked.
+docs/components/

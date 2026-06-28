@@ -81,7 +81,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
           {!collapsed && (
             <div className="flex flex-col leading-tight">
-              <span className="text-[13px] font-semibold tracking-tight">Stackline</span>
+              <span className="text-[13px] font-semibold tracking-tight">jvmScout</span>
               <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
                 jvm reliability
               </span>

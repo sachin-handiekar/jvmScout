@@ -14,11 +14,19 @@ import {
   Activity,
   Boxes,
   Mail,
+  AlertTriangle,
+  Database,
+  Server,
+  FileCode,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
-import { createApiToken } from "@/integrations/collector/client";
+import {
+  createApiToken,
+  resetAllData,
+  invalidateCache,
+} from "@/integrations/collector/client";
 import { PageHeader } from "@/components/PagePlaceholder";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,7 +53,7 @@ import { relativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/settings")({
-  head: () => ({ meta: [{ title: "Settings — Stackline" }] }),
+  head: () => ({ meta: [{ title: "Settings — jvmScout" }] }),
   component: SettingsPage,
 });
 
@@ -64,6 +72,7 @@ function SettingsPage() {
             <TabsTrigger value="redaction">Data privacy</TabsTrigger>
             <TabsTrigger value="tokens">API tokens</TabsTrigger>
             <TabsTrigger value="team">Team</TabsTrigger>
+            <TabsTrigger value="admin">Admin</TabsTrigger>
           </TabsList>
           <TabsContent value="agent" className="mt-4">
             <AgentInstallTab />
@@ -79,6 +88,9 @@ function SettingsPage() {
           </TabsContent>
           <TabsContent value="team" className="mt-4">
             <TeamTab />
+          </TabsContent>
+          <TabsContent value="admin" className="mt-4">
+            <AdminTab />
           </TabsContent>
         </Tabs>
       </div>
@@ -144,19 +156,27 @@ function Snippet({ code }: { code: string }) {
 
 function AgentInstallTab() {
   const qc = useQueryClient();
-  const { data: settings, isLoading } = useQuery({
-    queryKey: ["workspace_settings"],
+
+  // Real, project-scoped ingest tokens for this tenant — the actual credentials
+  // agents authenticate with. There is no separate "install key": a token's raw
+  // value is returned by the collector only once, at creation.
+  const { data: ingestTokens } = useQuery({
+    // Distinct from TokensTab's ["api_tokens"] (different row shape), but still
+    // refreshed by its prefix-matching invalidations.
+    queryKey: ["api_tokens", "ingest"],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from("workspace_settings")
+        .from("api_tokens")
         .select("*")
-        .limit(1)
-        .maybeSingle();
+        .order("created_at", { ascending: false });
       if (error) throw error;
-      return data;
+      return (data ?? []).filter(
+        (t: any) => (t.role ?? "ingest") === "ingest" && !t.revoked_at,
+      );
     },
   });
 
+  // Live fleet status, derived from the collector's /jvm-instances feed.
   const { data: agentStats } = useQuery({
     queryKey: ["agent_stats"],
     queryFn: async () => {
@@ -176,23 +196,27 @@ function AgentInstallTab() {
     refetchInterval: 30_000,
   });
 
-  const regenerate = useMutation({
+  const [project, setProject] = useState("default");
+  const [newKey, setNewKey] = useState<string | null>(null);
+
+  const generate = useMutation({
     mutationFn: async () => {
-      if (!settings?.id) return;
-      const newKey = "sk_install_" + crypto.randomUUID().replace(/-/g, "");
-      const { error } = await supabase
-        .from("workspace_settings")
-        .update({ install_key: newKey })
-        .eq("id", settings.id);
-      if (error) throw error;
+      const pid = project.trim() || "default";
+      // Mint a real ingest token bound to the project; raw value returns once.
+      const res = await createApiToken(`agent-${pid}`, { project_id: pid, role: "ingest" });
+      return res.token;
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["workspace_settings"] });
-      toast.success("Installation key regenerated");
+    onSuccess: (raw) => {
+      qc.invalidateQueries({ queryKey: ["api_tokens"] });
+      setNewKey(raw);
+      toast.success("Ingest key generated — copy it now");
     },
+    onError: (e) =>
+      toast.error(e instanceof Error ? e.message : "Could not generate key"),
   });
 
-  const key = settings?.install_key ?? "";
+  // The snippets show the just-minted key (once) or a placeholder otherwise.
+  const key = newKey ?? "<your-ingest-token>";
   const reportingActive = (agentStats?.active ?? 0) > 0;
 
   return (
@@ -200,45 +224,90 @@ function AgentInstallTab() {
       <Card>
         <SectionHeader
           title="Get started"
-          hint="Attach the JVMTI agent to your JVM. The agent streams events to Stackline using your installation key."
+          hint="Point JVMSCOUT_HOME at a directory holding the agent library, bci-transform.jar, and a jvmscout.yaml settings file. The JVM flag then just loads the library; everything else comes from the file or environment."
         />
 
         <div className="space-y-5">
           <div>
-            <Label className="mb-1.5 block text-xs font-medium">Linux / JVM flag</Label>
-            <Snippet code={`java -agentpath:/opt/stackline/lib/libStacklineAgent.so \\\n     -DSTACKLINE_KEY=${key || "<your-install-key>"} \\\n     -jar your-app.jar`} />
+            <Label className="mb-1.5 block text-xs font-medium">1. Generate an ingest key</Label>
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="min-w-[160px] flex-1 space-y-1">
+                <Label className="text-[11px] text-muted-foreground">Project</Label>
+                <Input
+                  placeholder="default"
+                  value={project}
+                  onChange={(e) => setProject(e.target.value)}
+                  className="font-mono"
+                />
+              </div>
+              <Button onClick={() => generate.mutate()} disabled={generate.isPending}>
+                <Plus className="h-3.5 w-3.5" />
+                <span className="ml-1.5">Generate</span>
+              </Button>
+            </div>
+            {newKey ? (
+              <div className="mt-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3">
+                <div className="mb-1 text-[11px] font-medium text-emerald-400">
+                  Ingest key created — copy it now, you won't see it again.
+                </div>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 overflow-x-auto rounded bg-background px-2 py-1.5 font-mono text-xs">
+                    {newKey}
+                  </code>
+                  <CopyButton value={newKey} label="Copy" />
+                  <Button size="sm" variant="ghost" onClick={() => setNewKey(null)}>Dismiss</Button>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-1.5 text-[11px] text-muted-foreground">
+                Mints a project-scoped <span className="font-mono">ingest</span> token. Manage or
+                revoke keys under the <span className="font-medium">API tokens</span> tab.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <Label className="mb-1.5 block text-xs font-medium">2. $JVMSCOUT_HOME/jvmscout.yaml</Label>
+            <Snippet code={`host: <collector-host>\nport: 8080\ndeployment: <your-service>\nenvironment: production`} />
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Keep the key out of the file — pass it as the{" "}
+              <span className="font-mono">JVMSCOUT_API_KEY</span> environment variable below.
+            </p>
+          </div>
+
+          <div>
+            <Label className="mb-1.5 block text-xs font-medium">3. Linux / JVM flag</Label>
+            <Snippet code={`export JVMSCOUT_HOME=/opt/jvmscout\nexport JVMSCOUT_API_KEY=${key}\njava -agentpath:$JVMSCOUT_HOME/lib/libjvmti-agent.so -jar your-app.jar`} />
           </div>
 
           <div>
             <Label className="mb-1.5 block text-xs font-medium">Docker</Label>
             <Snippet
-              code={`docker run -d \\\n  -e COLLECTOR_HOST=ingest.stackline.dev \\\n  -e STACKLINE_KEY=${key || "<your-install-key>"} \\\n  -v /opt/stackline:/opt/stackline:ro \\\n  your-org/your-app:latest`}
+              code={`docker run -d \\\n  -v /opt/jvmscout:/opt/jvmscout:ro \\\n  -e JVMSCOUT_HOME=/opt/jvmscout \\\n  -e JVMSCOUT_API_KEY=${key} \\\n  -e JAVA_TOOL_OPTIONS="-agentpath:/opt/jvmscout/lib/libjvmti-agent.so" \\\n  your-org/your-app:latest`}
             />
           </div>
 
-          <div>
-            <Label className="mb-1.5 block text-xs font-medium">Installation key</Label>
-            <div className="flex items-center gap-2">
-              <Input
-                readOnly
-                value={isLoading ? "Loading…" : key}
-                className="font-mono text-xs"
-              />
-              <CopyButton value={key} label="Copy" />
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => regenerate.mutate()}
-                disabled={regenerate.isPending}
-              >
-                <RefreshCw className={cn("h-3.5 w-3.5", regenerate.isPending && "animate-spin")} />
-                <span className="ml-1.5">Regenerate</span>
-              </Button>
+          {(ingestTokens ?? []).length > 0 && (
+            <div>
+              <Label className="mb-1.5 block text-xs font-medium">Existing ingest keys</Label>
+              <div className="divide-y divide-border rounded-md border border-border">
+                {(ingestTokens ?? []).map((t: any) => (
+                  <div
+                    key={t.id}
+                    className="flex items-center justify-between gap-3 px-3 py-2 text-[11px]"
+                  >
+                    <span className="font-medium">{t.name}</span>
+                    <span className="flex items-center gap-2 text-muted-foreground">
+                      <span className="font-mono">{t.token_prefix}…</span>
+                      <span className="rounded border border-border px-1.5 py-px font-mono">
+                        {t.project_id || "default"}
+                      </span>
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
-            <p className="mt-1.5 text-[11px] text-muted-foreground">
-              Regenerating invalidates existing agents — redeploy with the new key.
-            </p>
-          </div>
+          )}
         </div>
       </Card>
 
@@ -719,6 +788,147 @@ function TokensTab() {
           </div>
         )}
       </Card>
+    </div>
+  );
+}
+
+// ============= Tab 6: Admin (danger zone) =============
+
+function AdminTab() {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+
+  // Show how much data the reset will clear, using the same derived tables the
+  // rest of the dashboard reads (events = grouped exceptions, servers = agents).
+  const { data: counts, isLoading } = useQuery({
+    queryKey: ["admin_data_counts"],
+    queryFn: async () => {
+      const [events, servers] = await Promise.all([
+        supabase.from("events").select("id"),
+        supabase.from("servers").select("id"),
+      ]);
+      if (events.error) throw events.error;
+      if (servers.error) throw servers.error;
+      return {
+        events: (events.data ?? []).length,
+        servers: (servers.data ?? []).length,
+      };
+    },
+  });
+
+  const reset = useMutation({
+    mutationFn: () => resetAllData(),
+    onSuccess: (res) => {
+      const d = res.deleted;
+      // Drop the client-side derivation cache, then refetch every screen.
+      invalidateCache();
+      qc.invalidateQueries();
+      setOpen(false);
+      setConfirmText("");
+      toast.success(
+        `Deleted ${d.exceptions} events, ${d.instances} agents, ${d.source_classes} source classes`,
+      );
+    },
+    onError: (e: any) =>
+      toast.error(
+        e?.name === "CollectorAuthError"
+          ? "Your API key is not authorized to delete data (admin role required)."
+          : e?.message ?? "Could not delete data",
+      ),
+  });
+
+  const stat = (icon: React.ReactNode, label: string, value: React.ReactNode) => (
+    <div className="flex items-center gap-3 rounded-md border border-border bg-background px-3 py-2.5">
+      <div className="flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground">
+        {icon}
+      </div>
+      <div>
+        <div className="text-sm font-semibold">{value}</div>
+        <div className="text-[11px] text-muted-foreground">{label}</div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <SectionHeader
+          title="Stored data"
+          hint="Captured monitoring data currently held by the collector for this project."
+        />
+        {isLoading ? (
+          <Skeleton className="h-16 w-full" />
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-3">
+            {stat(<Database className="h-4 w-4" />, "Events", counts?.events ?? 0)}
+            {stat(<Server className="h-4 w-4" />, "Agents", counts?.servers ?? 0)}
+            {stat(<FileCode className="h-4 w-4" />, "Source classes", "—")}
+          </div>
+        )}
+      </Card>
+
+      <Card className="border-destructive/30 bg-destructive/5">
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+          <div className="flex-1">
+            <h3 className="text-sm font-semibold text-destructive">Danger zone</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Permanently delete <strong>all captured monitoring data</strong> for this
+              project — events &amp; stack traces, JVM agents/instances, and decompiled
+              source classes. Your integrations, redaction rules, API tokens, and team
+              are <strong>not</strong> affected. This cannot be undone.
+            </p>
+            <div className="mt-3">
+              <Button variant="destructive" size="sm" onClick={() => setOpen(true)}>
+                <Trash2 className="h-3.5 w-3.5" />
+                <span className="ml-1.5">Delete all data</span>
+              </Button>
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      <Dialog
+        open={open}
+        onOpenChange={(o) => {
+          setOpen(o);
+          if (!o) setConfirmText("");
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete all monitoring data?</DialogTitle>
+            <DialogDescription>
+              This permanently removes every captured event, JVM agent, and source class
+              for this project. Configuration is preserved. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label className="text-xs">
+              Type <span className="font-mono font-semibold">DELETE</span> to confirm
+            </Label>
+            <Input
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              placeholder="DELETE"
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={confirmText !== "DELETE" || reset.isPending}
+              onClick={() => reset.mutate()}
+            >
+              {reset.isPending ? "Deleting…" : "Delete everything"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
