@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>jvmScout — Low-overhead JVMTI agent for runtime instrumentation</title>
+<meta name="description" content="jvmScout is an open-source JVMTI agent for tracing, profiling, and inspecting running JVMs with near-zero overhead. MIT licensed. Java 8–21+." />
+<meta property="og:title" content="jvmScout — JVMTI agent for runtime instrumentation" />
+<meta property="og:description" content="Low-overhead JVMTI agent for tracing, profiling, and inspecting running JVMs." />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary_large_image" />
+<link rel="canonical" href="/landing" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['Inter', 'system-ui', 'sans-serif'],
+          mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+        },
+        colors: {
+          background: 'var(--bg)',
+          foreground: 'var(--fg)',
+          muted: 'var(--muted)',
+          border: 'var(--border)',
+          panel: 'var(--panel)',
+          elevated: 'var(--elevated)',
+          accent: 'var(--accent)',
+          info: 'var(--info)',
+          warn: 'var(--warn)',
+        },
+      },
+    },
+  };
+</script>
+<style>
+  :root.dark {
+    --bg: #0B0D12;
+    --fg: #E6E8EE;
+    --muted: #8A93A6;
+    --border: #1C2230;
+    --panel: #11151D;
+    --elevated: #161B26;
+    --accent: #34D399;
+    --info: #5B8DEF;
+    --warn: #F59E0B;
+  }
+  :root.light {
+    --bg: #FFFFFF;
+    --fg: #0B0D12;
+    --muted: #5A6478;
+    --border: #E5E8EF;
+    --panel: #F7F8FA;
+    --elevated: #EEF1F6;
+    --accent: #059669;
+    --info: #3B6FE0;
+    --warn: #B45309;
+  }
+  html { color-scheme: dark; }
+  html.light { color-scheme: light; }
+  body { background: var(--bg); color: var(--fg); font-family: Inter, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  .font-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  .reveal { opacity: 0; transform: translateY(12px); transition: opacity .7s ease, transform .7s ease; }
+  .reveal.shown { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) { .reveal { opacity: 1; transform: none; transition: none; } html { scroll-behavior: auto !important; } }
+  html { scroll-behavior: smooth; }
+  .scroll-mt { scroll-margin-top: 5rem; }
+  .hero-glow {
+    background: radial-gradient(60% 50% at 50% 0%, rgba(52,211,153,0.10), transparent 60%),
+                radial-gradient(40% 40% at 80% 10%, rgba(91,141,239,0.08), transparent 60%);
+  }
+  pre { tab-size: 2; }
+  .tok-c { color: var(--muted); }
+  .tok-k { color: var(--info); }
+  .tok-s { color: var(--warn); }
+  .tok-a { color: var(--accent); }
+</style>
+</head>
+<body class="min-h-screen">
+
+<header class="sticky top-0 z-40 border-b border-border/70 backdrop-blur" style="background: color-mix(in oklab, var(--bg) 80%, transparent);">
+  <div class="mx-auto flex h-14 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
+    <a href="#top" class="flex items-center gap-2">
+      <span class="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-panel">
+        <svg class="h-3.5 w-3.5" style="color: var(--accent)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      </span>
+      <span class="font-mono text-sm font-semibold tracking-tight">jvmScout</span>
+    </a>
+    <nav class="hidden items-center gap-1 md:flex" id="nav">
+      <a href="#features" class="rounded-md px-3 py-1.5 text-sm text-muted hover:text-foreground transition-colors">Features</a>
+      <a href="#how" class="rounded-md px-3 py-1.5 text-sm text-muted hover:text-foreground transition-colors">How it works</a>
+      <a href="#install" class="rounded-md px-3 py-1.5 text-sm text-muted hover:text-foreground transition-colors">Install</a>
+      <a href="#config" class="rounded-md px-3 py-1.5 text-sm text-muted hover:text-foreground transition-colors">Configuration</a>
+      <a href="#docs" class="rounded-md px-3 py-1.5 text-sm text-muted hover:text-foreground transition-colors">Docs</a>
+      <a href="https://github.com/sachin-handiekar/jvmScout" target="_blank" rel="noopener" class="rounded-md px-3 py-1.5 text-sm text-muted hover:text-foreground transition-colors">GitHub</a>
+    </nav>
+    <div class="flex items-center gap-2">
+      <button id="themeBtn" aria-label="Toggle theme" class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-panel text-muted hover:text-foreground transition-colors">
+        <svg id="iconSun" class="h-4 w-4 hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg id="iconMoon" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+      <a href="https://github.com/sachin-handiekar/jvmScout" target="_blank" rel="noopener" class="hidden sm:inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-3 py-1.5 text-xs font-medium hover:bg-elevated transition-colors">
+        <svg class="h-3.5 w-3.5" style="color: var(--warn)" viewBox="0 0 24 24" fill="currentColor"><polygon points="12,2 15,8.5 22,9.3 17,14 18.2,21 12,17.8 5.8,21 7,14 2,9.3 9,8.5"/></svg>
+        Star
+        <span class="rounded bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted">2.4k</span>
+      </a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+<!-- HERO -->
+<section class="relative overflow-hidden border-b border-border">
+  <div class="pointer-events-none absolute inset-0 opacity-[0.35] hero-glow" aria-hidden="true"></div>
+  <div class="relative mx-auto grid max-w-6xl gap-10 px-4 py-20 sm:px-6 lg:grid-cols-[1.1fr_0.9fr] lg:py-28">
+    <div>
+      <div class="reveal mb-5 flex flex-wrap items-center gap-2">
+        <span class="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[11px]" style="border-color: color-mix(in oklab, var(--accent) 40%, transparent); background: color-mix(in oklab, var(--accent) 10%, transparent); color: var(--accent)">
+          <span class="h-1.5 w-1.5 rounded-full" style="background: var(--accent)"></span> v1.4.0 released
+        </span>
+        <span class="inline-flex items-center rounded-full border border-border bg-elevated px-2.5 py-1 font-mono text-[11px] text-muted">MIT License</span>
+        <span class="inline-flex items-center rounded-full border border-border bg-elevated px-2.5 py-1 font-mono text-[11px] text-muted">C / C++</span>
+        <span class="inline-flex items-center rounded-full border border-border bg-elevated px-2.5 py-1 font-mono text-[11px] text-muted">Java 8 – 21+</span>
+      </div>
+      <h1 class="reveal text-4xl font-semibold leading-[1.05] tracking-tight sm:text-5xl lg:text-6xl">A low-overhead JVMTI agent for runtime instrumentation.</h1>
+      <p class="reveal mt-5 max-w-xl text-base text-muted sm:text-lg">Hook into any running JVM through JVMTI to trace method calls, inspect the heap, and profile execution — without rebuilding your application or paying the cost of a heavyweight Java agent.</p>
+      <div class="reveal mt-7 flex flex-wrap items-center gap-3">
+        <a href="#install" class="inline-flex items-center gap-2 rounded-md px-4 py-2.5 text-sm font-semibold shadow-sm transition-transform hover:-translate-y-0.5" style="background: var(--accent); color: var(--bg)">
+          ↓ Get started
+        </a>
+        <a href="https://github.com/sachin-handiekar/jvmScout" target="_blank" rel="noopener" class="inline-flex items-center gap-2 rounded-md border border-border bg-panel px-4 py-2.5 text-sm font-medium hover:bg-elevated transition-colors">
+          View on GitHub
+        </a>
+      </div>
+      <div class="reveal mt-8 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-muted">
+        <span>★ 2.4k stars</span>
+        <span>⛨ Zero runtime deps</span>
+        <span>⚡ &lt; 2% overhead</span>
+      </div>
+    </div>
+
+    <div class="reveal rounded-xl border border-border bg-panel p-3 shadow-2xl shadow-black/30">
+      <div class="flex items-center gap-2 px-2 py-2">
+        <span class="h-2.5 w-2.5 rounded-full" style="background:#FF5F57"></span>
+        <span class="h-2.5 w-2.5 rounded-full" style="background:#FEBC2E"></span>
+        <span class="h-2.5 w-2.5 rounded-full" style="background:#28C840"></span>
+        <span class="ml-2 font-mono text-[11px] text-muted">bash — production-host-01</span>
+      </div>
+      <div data-codeblock data-lang="bash" data-label="simplest usage">$ java -agentpath:./libjvmScout.so -jar app.jar
+[jvmScout] loaded — JVMTI 1.2, Java 17.0.9
+[jvmScout] tracing 142 classes, 0 errors
+[jvmScout] listening on /tmp/jvmScout.sock</div>
+      <div class="mt-3 grid grid-cols-3 gap-2 px-1 pb-1 text-center">
+        <div class="rounded-md border border-border bg-background/40 px-2 py-2"><div class="font-mono text-sm font-semibold">&lt; 2%</div><div class="text-[10px] uppercase tracking-wider text-muted">Overhead</div></div>
+        <div class="rounded-md border border-border bg-background/40 px-2 py-2"><div class="font-mono text-sm font-semibold">12 ms</div><div class="text-[10px] uppercase tracking-wider text-muted">Startup</div></div>
+        <div class="rounded-md border border-border bg-background/40 px-2 py-2"><div class="font-mono text-sm font-semibold">1.8 MB</div><div class="text-[10px] uppercase tracking-wider text-muted">Footprint</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PROBLEM / SOLUTION -->
+<section class="border-b border-border">
+  <div class="mx-auto grid max-w-6xl gap-10 px-4 py-20 sm:px-6 lg:grid-cols-2">
+    <div class="reveal">
+      <div class="font-mono text-xs uppercase tracking-wider" style="color: var(--accent)">The problem</div>
+      <h2 class="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">Observing a live JVM is supposed to be hard.</h2>
+      <p class="mt-4 text-sm leading-relaxed text-muted">Bytecode rewriting agents are heavy. Java profilers add overhead you can't ship to production. <code class="font-mono text-foreground">jstack</code> is a snapshot, not a story. When something misbehaves in a long-lived service, the only reproducible signal is often a log line that doesn't tell you what you actually needed to know.</p>
+    </div>
+    <div class="reveal">
+      <div class="font-mono text-xs uppercase tracking-wider" style="color: var(--accent)">The solution</div>
+      <h2 class="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">A native agent that speaks JVMTI directly.</h2>
+      <p class="mt-4 text-sm leading-relaxed text-muted">jvmScout is a tiny C++ library the JVM loads at startup or via dynamic attach. It hooks the runtime through the standard JVMTI interface — the same one HotSpot's own tools use — so you get method tracing, heap walks, lock monitoring, and class instrumentation with overhead measured in single-digit percent.</p>
+      <div class="mt-5 grid grid-cols-2 gap-2 text-xs">
+        <div class="flex items-start gap-2 rounded-md border border-border bg-panel px-3 py-2"><span style="color: var(--accent)">✓</span><span class="text-muted">No bytecode rewriting at build time</span></div>
+        <div class="flex items-start gap-2 rounded-md border border-border bg-panel px-3 py-2"><span style="color: var(--accent)">✓</span><span class="text-muted">No Java agent JAR on the classpath</span></div>
+        <div class="flex items-start gap-2 rounded-md border border-border bg-panel px-3 py-2"><span style="color: var(--accent)">✓</span><span class="text-muted">Stream events out-of-process</span></div>
+        <div class="flex items-start gap-2 rounded-md border border-border bg-panel px-3 py-2"><span style="color: var(--accent)">✓</span><span class="text-muted">Disable hot paths at runtime</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<div id="features" class="scroll-mt mx-auto max-w-6xl px-4 pb-8 pt-16 sm:px-6 sm:pt-20">
+  <div class="reveal">
+    <div class="font-mono text-xs uppercase tracking-wider" style="color: var(--accent)">Features</div>
+    <h2 class="mt-2 max-w-3xl text-2xl font-semibold tracking-tight sm:text-3xl">Everything you need from a JVMTI agent.</h2>
+    <p class="mt-3 max-w-2xl text-sm text-muted">A focused feature set, all wired through the native JVMTI interface.</p>
+  </div>
+</div>
+<section class="border-b border-border">
+  <div id="featGrid" class="mx-auto grid max-w-6xl gap-3 px-4 pb-20 sm:px-6 sm:grid-cols-2 lg:grid-cols-3"></div>
+</section>
+
+<!-- HOW IT WORKS -->
+<div id="how" class="scroll-mt mx-auto max-w-6xl px-4 pb-8 pt-16 sm:px-6 sm:pt-20">
+  <div class="reveal">
+    <div class="font-mono text-xs uppercase tracking-wider" style="color: var(--accent)">How it works</div>
+    <h2 class="mt-2 max-w-3xl text-2xl font-semibold tracking-tight sm:text-3xl">One native library, loaded by the JVM.</h2>
+    <p class="mt-3 max-w-2xl text-sm text-muted">The JVM hands the agent a JVMTI environment. The agent registers callbacks. Your data flows out.</p>
+  </div>
+</div>
+<section class="border-b border-border">
+  <div class="mx-auto max-w-6xl px-4 pb-20 sm:px-6">
+    <div class="reveal rounded-xl border border-border bg-background/40 p-6">
+      <div class="grid grid-cols-1 items-stretch gap-3 sm:grid-cols-7">
+        <div class="sm:col-span-2 flex flex-col items-center justify-center rounded-lg border border-border bg-panel px-4 py-5 text-center">
+          <div class="text-muted">▣</div><div class="mt-2 text-sm font-semibold">Your JVM</div><div class="mt-1 font-mono text-[11px] text-muted">app.jar</div>
+        </div>
+        <div class="flex items-center justify-center sm:col-span-1"><div class="flex w-full items-center gap-1.5"><span class="h-px flex-1 bg-border"></span><span class="font-mono text-[10px] uppercase tracking-wider text-muted">-agentpath</span><span class="h-px flex-1 bg-border"></span></div></div>
+        <div class="sm:col-span-1 flex flex-col items-center justify-center rounded-lg border border-border bg-panel px-4 py-5 text-center">
+          <div style="color: var(--info)">≣</div><div class="mt-2 text-sm font-semibold">JVMTI</div><div class="mt-1 font-mono text-[11px] text-muted">stable ABI</div>
+        </div>
+        <div class="flex items-center justify-center sm:col-span-1"><div class="flex w-full items-center gap-1.5"><span class="h-px flex-1 bg-border"></span><span class="font-mono text-[10px] uppercase tracking-wider text-muted">callbacks</span><span class="h-px flex-1 bg-border"></span></div></div>
+        <div class="sm:col-span-2 flex flex-col items-center justify-center rounded-lg border border-border bg-panel px-4 py-5 text-center">
+          <div style="color: var(--accent)">◰</div><div class="mt-2 text-sm font-semibold">jvmScout</div><div class="mt-1 font-mono text-[11px] text-muted">native .so / .dll</div>
+        </div>
+      </div>
+      <div class="mt-3 flex flex-wrap items-center justify-center gap-2 text-[11px] text-muted">
+        <span class="inline-flex items-center rounded-full border border-border bg-elevated px-2.5 py-1 font-mono">stdout / jsonl</span>
+        <span class="inline-flex items-center rounded-full border border-border bg-elevated px-2.5 py-1 font-mono">unix socket</span>
+        <span class="inline-flex items-center rounded-full border border-border bg-elevated px-2.5 py-1 font-mono">otlp exporter</span>
+      </div>
+    </div>
+    <div id="stepGrid" class="mt-10 grid gap-4 sm:grid-cols-3"></div>
+  </div>
+</section>
+
+<!-- INSTALL -->
+<div id="install" class="scroll-mt mx-auto max-w-6xl px-4 pb-8 pt-16 sm:px-6 sm:pt-20">
+  <div class="reveal">
+    <div class="font-mono text-xs uppercase tracking-wider" style="color: var(--accent)">Install</div>
+    <h2 class="mt-2 max-w-3xl text-2xl font-semibold tracking-tight sm:text-3xl">Two ways in — pick the one you trust.</h2>
+    <p class="mt-3 max-w-2xl text-sm text-muted">A prebuilt binary for getting started, or a source build for production.</p>
+  </div>
+</div>
+<section class="border-b border-border">
+  <div class="mx-auto grid max-w-6xl gap-4 px-4 pb-12 sm:px-6 lg:grid-cols-2">
+    <div class="reveal rounded-lg border border-border bg-panel p-5">
+      <h3 class="text-sm font-semibold" style="color: var(--fg)"><span style="color: var(--accent)">↓</span> Download a release</h3>
+      <p class="mt-1 text-xs text-muted">Prebuilt for Linux, macOS, and Windows.</p>
+      <div class="mt-3" data-codeblock data-lang="bash">$ curl -L -o libjvmScout.so \
+    https://github.com/sachin-handiekar/jvmScout/releases/latest/download/libjvmScout-linux-x86_64.so
+$ chmod +x libjvmScout.so</div>
+      <div class="mt-3 flex flex-wrap gap-2 text-[11px] text-muted">
+        <span class="inline-flex items-center rounded-full border border-border bg-elevated px-2.5 py-1 font-mono">libjvmScout.so · Linux</span>
+        <span class="inline-flex items-center rounded-full border border-border bg-elevated px-2.5 py-1 font-mono">libjvmScout.dylib · macOS</span>
+        <span class="inline-flex items-center rounded-full border border-border bg-elevated px-2.5 py-1 font-mono">jvmScout.dll · Windows</span>
+      </div>
+    </div>
+    <div class="reveal rounded-lg border border-border bg-panel p-5">
+      <h3 class="text-sm font-semibold"><span style="color: var(--accent)">⚒</span> Build from source</h3>
+      <p class="mt-1 text-xs text-muted">Requires a C++17 toolchain, CMake 3.16+, and a JDK.</p>
+      <div class="mt-3" data-codeblock data-lang="bash">$ git clone https://github.com/sachin-handiekar/jvmScout.git
+$ cd jvmScout
+$ cmake -B build -DCMAKE_BUILD_TYPE=Release
+$ cmake --build build -j
+# artifact: build/libjvmScout.so</div>
+    </div>
+  </div>
+
+  <div class="mx-auto max-w-6xl px-4 pb-20 sm:px-6">
+    <h3 class="reveal mb-4 text-sm font-semibold text-muted"><span class="font-mono" style="color: var(--accent)">$</span> Quick start</h3>
+    <div class="grid gap-3 lg:grid-cols-2">
+      <div data-codeblock data-lang="bash" data-label="load at startup">$ java -agentpath:/opt/jvmScout/libjvmScout.so -jar yourapp.jar</div>
+      <div data-codeblock data-lang="bash" data-label="pass options">$ java -agentpath:/opt/jvmScout/libjvmScout.so=trace=com.acme.*,output=/var/log/jvmScout.jsonl,sample_rate=100 \
+    -jar yourapp.jar</div>
+      <div data-codeblock data-lang="bash" data-label="dynamic attach">$ jvmScout attach --pid 12345 --options trace=com.acme.checkout.*</div>
+      <div data-codeblock data-lang="properties" data-label="sample output">event=method_enter thread=http-nio-8080-exec-3 class=com.acme.OrderService method=submit ts=1782059612.041
+event=method_exit  thread=http-nio-8080-exec-3 class=com.acme.OrderService method=submit dur_us=4821
+event=alloc        thread=http-nio-8080-exec-3 type=com.acme.Order size=192</div>
+    </div>
+  </div>
+</section>
+
+<!-- CONFIG -->
+<div id="config" class="scroll-mt mx-auto max-w-6xl px-4 pb-8 pt-16 sm:px-6 sm:pt-20">
+  <div class="reveal">
+    <div class="font-mono text-xs uppercase tracking-wider" style="color: var(--accent)">Configuration</div>
+    <h2 class="mt-2 max-w-3xl text-2xl font-semibold tracking-tight sm:text-3xl">Tunable, but reasonable by default.</h2>
+    <p class="mt-3 max-w-2xl text-sm text-muted">Pass options inline on the agent string, or point at a config file.</p>
+  </div>
+</div>
+<section class="border-b border-border">
+  <div class="mx-auto max-w-6xl px-4 pb-20 sm:px-6">
+    <div class="reveal overflow-hidden rounded-lg border border-border bg-panel">
+      <table class="w-full text-left text-sm">
+        <thead class="bg-elevated text-[11px] uppercase tracking-wider text-muted"><tr><th class="px-4 py-3 font-medium">Option</th><th class="px-4 py-3 font-medium">Type / default</th><th class="px-4 py-3 font-medium">Description</th></tr></thead>
+        <tbody id="optBody"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- USE CASES -->
+<div id="usecases" class="scroll-mt mx-auto max-w-6xl px-4 pb-8 pt-16 sm:px-6 sm:pt-20">
+  <div class="reveal">
+    <div class="font-mono text-xs uppercase tracking-wider" style="color: var(--accent)">Use cases</div>
+    <h2 class="mt-2 max-w-3xl text-2xl font-semibold tracking-tight sm:text-3xl">Built for the moments logs aren't enough.</h2>
+  </div>
+</div>
+<section class="border-b border-border">
+  <div id="useGrid" class="mx-auto grid max-w-6xl gap-3 px-4 pb-20 sm:px-6 sm:grid-cols-2 lg:grid-cols-4"></div>
+</section>
+
+<!-- COMMUNITY -->
+<div id="docs" class="scroll-mt mx-auto max-w-6xl px-4 pb-8 pt-16 sm:px-6 sm:pt-20">
+  <div class="reveal">
+    <div class="font-mono text-xs uppercase tracking-wider" style="color: var(--accent)">Open source</div>
+    <h2 class="mt-2 max-w-3xl text-2xl font-semibold tracking-tight sm:text-3xl">Built in the open. Contributions welcome.</h2>
+    <p class="mt-3 max-w-2xl text-sm text-muted">MIT licensed. Issues, PRs, and questions are all genuinely read.</p>
+  </div>
+</div>
+<section class="border-b border-border">
+  <div id="commGrid" class="mx-auto grid max-w-6xl gap-3 px-4 pb-20 sm:px-6 sm:grid-cols-2 lg:grid-cols-4"></div>
+</section>
+
+<!-- LICENSE -->
+<section class="border-b border-border">
+  <div class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+    <div class="reveal flex flex-col gap-5 rounded-xl border border-border bg-panel p-6 md:flex-row md:items-center md:justify-between">
+      <div>
+        <div class="font-mono text-xs uppercase tracking-wider" style="color: var(--accent)">License</div>
+        <h3 class="mt-1 text-xl font-semibold">MIT License</h3>
+        <p class="mt-2 max-w-2xl text-sm text-muted">Free to use, modify, and distribute — commercially or otherwise. The software is provided as-is, with no warranty. Keep the copyright notice with copies and you're set.</p>
+      </div>
+      <a href="https://github.com/sachin-handiekar/jvmScout/blob/main/LICENSE" target="_blank" rel="noopener" class="inline-flex shrink-0 items-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-elevated transition-colors">Read the full license</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-8 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+    <div class="flex items-center gap-2 text-xs text-muted">
+      <span style="color: var(--accent)">◆</span>
+      <span class="font-mono">jvmScout</span> · <span>© 2026 jvmScout contributors</span>
+    </div>
+    <div class="flex items-center gap-4 text-xs text-muted">
+      <a href="https://github.com/sachin-handiekar/jvmScout" target="_blank" rel="noopener" class="hover:text-foreground">GitHub</a>
+      <a href="https://github.com/sachin-handiekar/jvmScout/blob/main/LICENSE" target="_blank" rel="noopener" class="hover:text-foreground">MIT License</a>
+      <a href="#top" class="hover:text-foreground">Back to top ↑</a>
+    </div>
+  </div>
+</footer>
+
+<button id="topBtn" aria-label="Back to top" class="hidden fixed bottom-6 right-6 z-30 h-10 w-10 items-center justify-center rounded-full border border-border bg-panel text-foreground shadow-lg backdrop-blur hover:bg-elevated">↑</button>
+
+<script>
+  // THEME
+  const root = document.documentElement;
+  const sun = document.getElementById('iconSun'), moon = document.getElementById('iconMoon');
+  function applyTheme(t) {
+    root.classList.remove('dark','light'); root.classList.add(t);
+    sun.classList.toggle('hidden', t !== 'dark');
+    moon.classList.toggle('hidden', t === 'dark');
+    try { localStorage.setItem('theme', t); } catch {}
+  }
+  applyTheme((function(){ try { return localStorage.getItem('theme') || 'dark'; } catch { return 'dark'; } })());
+  document.getElementById('themeBtn').addEventListener('click', () => {
+    applyTheme(root.classList.contains('dark') ? 'light' : 'dark');
+  });
+
+  // HIGHLIGHT
+  function escapeHtml(s){return s.replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+  function highlight(code, lang) {
+    return code.split('\n').map(line => {
+      const t = line.trimStart();
+      if (t.startsWith('#') || t.startsWith('//')) return '<span class="tok-c">'+escapeHtml(line)+'</span>';
+      if (lang === 'bash') {
+        const m = line.match(/^(\$\s*)?(\S+)?(.*)$/);
+        if (!m) return escapeHtml(line);
+        let out = '';
+        if (m[1]) out += '<span class="tok-c">'+escapeHtml(m[1])+'</span>';
+        if (m[2]) out += '<span class="tok-a">'+escapeHtml(m[2])+'</span>';
+        if (m[3]) out += escapeHtml(m[3]).replace(/(--?[\w-]+)/g, '<span class="tok-k">$1</span>');
+        return out;
+      }
+      if (lang === 'properties') {
+        const eq = line.indexOf('=');
+        if (eq > 0) return '<span class="tok-k">'+escapeHtml(line.slice(0,eq))+'</span>=<span class="tok-s">'+escapeHtml(line.slice(eq+1))+'</span>';
+      }
+      return escapeHtml(line);
+    }).join('\n');
+  }
+
+  // CODE BLOCKS
+  document.querySelectorAll('[data-codeblock]').forEach(el => {
+    const code = el.textContent;
+    const lang = el.dataset.lang || 'bash';
+    const label = el.dataset.label || lang;
+    el.classList.add('group','relative','overflow-hidden','rounded-lg','border','border-border','bg-panel','shadow-sm');
+    el.innerHTML = `
+      <div class="flex items-center justify-between border-b border-border bg-elevated px-3 py-2">
+        <div class="font-mono text-[11px] uppercase tracking-wider text-muted">${escapeHtml(label)}</div>
+        <button type="button" class="copy-btn inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-[11px] font-medium text-muted hover:text-foreground hover:bg-elevated transition-colors">Copy</button>
+      </div>
+      <pre class="overflow-x-auto px-4 py-3 text-[13px] leading-relaxed"><code class="font-mono">${highlight(code, lang)}</code></pre>`;
+    const btn = el.querySelector('.copy-btn');
+    btn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(code); btn.textContent = 'Copied!'; setTimeout(()=>btn.textContent='Copy', 1500); } catch {}
+    });
+  });
+
+  // FEATURES
+  const FEATURES = [
+    ['{}','Automated root cause','Every error opens a three-pane production debugger: full stack trace, source code at the failing line, and the complete local-variable state at each frame.'],
+    ['▣','Variable-level snapshots','Capture local variables, fields, and arguments at the moment of failure — with redaction for secrets and PII, and collapsible JSON trees for object state.'],
+    ['☰','Logs in context','The log lines leading up to each failure are attached to the snapshot, color-coded by level, so you read the story instead of grepping production.'],
+    ['⚡','Reliability dashboard','KPIs, a stacked error-volume chart, top events with sparklines, app health pills, and a 0–100 reliability score for the selected environment.'],
+    ['◆','Events triage','A dense, sortable table of every error: type, severity, location, hits, 24h trend, and quick filters for "New in last deploy", "Increasing", and "Unresolved".'],
+    ['⌁','Deployment regressions','Compare reliability across releases. Each deploy gets a Regression or Improved badge based on new errors introduced and volume delta vs. the previous version.'],
+    ['▤','Applications & agents','Drill into any application to see fleet health, per-server agent versions, "Update available" flags, and an environment-scoped view of events and deploys.'],
+    ['🔔','Alert rules','Trigger on new events, volume thresholds, regressions, or reoccurrences. Scope to an app or deployment. Route to Slack, PagerDuty, Email, or Webhook.'],
+    ['⚙','Environment & time-range context','A global Production / Staging / Development selector and time-range filter run through every page, table, and chart — one switch, consistent view.'],
+  ];
+  document.getElementById('featGrid').innerHTML = FEATURES.map(([i,t,b]) => `
+    <div class="reveal group h-full rounded-lg border border-border bg-panel p-5 transition-colors hover:bg-elevated">
+      <div class="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted transition-colors group-hover:text-foreground" style="font-size:14px">${i}</div>
+      <h3 class="mt-4 text-sm font-semibold">${t}</h3>
+      <p class="mt-1.5 text-xs leading-relaxed text-muted">${b}</p>
+    </div>`).join('');
+
+  // STEPS
+  const STEPS = [
+    ['JVM loads the library','On -agentpath, the JVM calls Agent_OnLoad and hands the agent a fresh JVMTI environment.'],
+    ['Agent registers callbacks','The agent asks for the capabilities it needs and subscribes to events: VMInit, MethodEntry, ClassPrepare, …'],
+    ['Events stream out','Callbacks fire inline with the JVM. The agent batches them and ships them through your chosen exporter.'],
+  ];
+  document.getElementById('stepGrid').innerHTML = STEPS.map(([t,b],i) => `
+    <div class="reveal rounded-lg border border-border bg-panel p-5">
+      <div class="flex items-center gap-2 font-mono text-xs text-muted">
+        <span class="flex h-5 w-5 items-center justify-center rounded-full border border-border bg-background text-[10px] text-foreground">${i+1}</span> step
+      </div>
+      <h3 class="mt-3 text-sm font-semibold">${t}</h3>
+      <p class="mt-1.5 text-xs leading-relaxed text-muted">${b}</p>
+    </div>`).join('');
+
+  // OPTIONS
+  const OPTIONS = [
+    ['trace','string (class glob)','""','Comma-separated glob patterns of fully-qualified class names to instrument.'],
+    ['output','path','stdout','Destination for the event stream. Accepts a file path or one of stdout, stderr, socket://…'],
+    ['sample_rate','integer (1–10000)','1','Record 1 in N invocations of matched methods. Use to keep overhead bounded under load.'],
+    ['heap_walk','boolean','false','Enable the heap iteration capability. Required for the heap inspection commands.'],
+    ['monitor_contention','boolean','false','Emit events on monitor contention. Useful for diagnosing lock starvation.'],
+    ['config','path','—','Load options from a TOML file. Inline options on the agent string override file values.'],
+  ];
+  document.getElementById('optBody').innerHTML = OPTIONS.map(([n,t,d,desc],i) => `
+    <tr class="${i%2?'bg-background/30':''}">
+      <td class="px-4 py-3 align-top font-mono text-[12.5px]" style="color: var(--info)">${n}</td>
+      <td class="px-4 py-3 align-top"><div class="font-mono text-[12px]">${t}</div><div class="font-mono text-[11px] text-muted">default: ${d}</div></td>
+      <td class="px-4 py-3 align-top text-[13px] text-muted">${desc}</td>
+    </tr>`).join('');
+
+  // USE CASES
+  const USECASES = [
+    ['⚡','Production profiling','Sampled method tracing on live services without redeploying or reaching for a heavyweight profiler.'],
+    ['◆','Hard-to-reproduce bugs','Capture the exact call sequence and arguments leading up to a misbehavior in a long-running service.'],
+    ['⛨','Runtime security monitoring','Watch for reflective access, unexpected ClassLoaders, and dynamically defined classes in production.'],
+    ['⚙','Performance research','Compare JIT behavior across releases by recording compile events and method-level execution counts.'],
+  ];
+  document.getElementById('useGrid').innerHTML = USECASES.map(([i,t,b]) => `
+    <div class="reveal h-full rounded-lg border border-border bg-panel p-5">
+      <div style="color: var(--accent); font-size: 18px">${i}</div>
+      <h3 class="mt-3 text-sm font-semibold">${t}</h3>
+      <p class="mt-1.5 text-xs leading-relaxed text-muted">${b}</p>
+    </div>`).join('');
+
+  // COMMUNITY
+  const REPO = 'https://github.com/sachin-handiekar/jvmScout';
+  const COMMUNITY = [
+    ['★','Star the repo', REPO],
+    ['⎇','Open an issue', REPO+'/issues'],
+    ['✎','Contributing guide', REPO+'/blob/main/CONTRIBUTING.md'],
+    ['⌬','View releases', REPO+'/releases'],
+  ];
+  document.getElementById('commGrid').innerHTML = COMMUNITY.map(([i,l,h]) => `
+    <a href="${h}" target="_blank" rel="noopener" class="reveal group flex h-full items-center gap-3 rounded-lg border border-border bg-panel p-4 transition-colors hover:bg-elevated">
+      <span class="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted transition-colors group-hover:text-foreground">${i}</span>
+      <span class="text-sm font-medium">${l}</span>
+    </a>`).join('');
+
+  // REVEAL ON SCROLL
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('shown'); io.unobserve(e.target); } });
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+  // BACK TO TOP
+  const topBtn = document.getElementById('topBtn');
+  window.addEventListener('scroll', () => {
+    topBtn.classList.toggle('hidden', window.scrollY <= 600);
+    topBtn.classList.toggle('flex', window.scrollY > 600);
+  }, { passive: true });
+  topBtn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+</script>
+</body>
+</html>
