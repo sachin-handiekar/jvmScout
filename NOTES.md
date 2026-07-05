@@ -70,7 +70,9 @@ ComponentLanguage / runtimeOutput artifactFolderNative agentC++17, MSVC, WinHTTP
 
 &#x20; "timestamp": "...", "fingerprint": "...", "captureMode": "FULL|REDUCED|COUNT\_ONLY",
 
-&#x20; "hitCount": 1,   // cumulative per-fingerprint counter (display only); each event = 1 occurrence "deploymentId": "...", "instanceId": "...",
+&#x20; "hitCount": 1,   // cumulative per-fingerprint counter (display only)
+
+&#x20; "occurrences": 1,  // real throws this event represents (>1 for aggregated COUNT_ONLY summaries; collector SUMs this) "deploymentId": "...", "instanceId": "...",
 
 &#x20; "exceptionType": "java/lang/NullPointerException",
 

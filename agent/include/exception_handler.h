@@ -12,4 +12,11 @@ void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                 jobject exception, jmethodID catch_method,
                                 jlocation catch_location);
 
+struct AgentContext;
+
+// Flush pending aggregated COUNT_ONLY summaries into the send queue. Called
+// opportunistically from the exception callback and with force=true at
+// VM_DEATH (before the queue is stopped).
+void flush_pending_counts(AgentContext& ctx, bool force);
+
 #endif  // JVMTI_AGENT_EXCEPTION_HANDLER_H

@@ -6,6 +6,7 @@
 
 #include "async_queue.h"
 #include "config.h"
+#include "count_aggregator.h"
 #include "fingerprint.h"
 #include "ifilter.h"
 #include "itransport.h"
@@ -87,6 +88,76 @@ static void test_sampler_lru_bound() {
         s.decide("fp-" + std::to_string(i));
     }
     CHECK(s.tracked() <= 4);
+}
+
+static void test_sampler_default_bound_and_thread_safety() {
+    // Striped sampler: hammer it from several threads with overlapping
+    // fingerprints; the total tracked set stays within the configured cap and
+    // per-fingerprint totals remain exact.
+    Sampler s;  // default cap (4096), striped
+    const int kThreads = 8, kPerThread = 2000;
+    std::vector<std::thread> ts;
+    for (int t = 0; t < kThreads; ++t) {
+        ts.emplace_back([&s] {
+            for (int i = 0; i < kPerThread; ++i) {
+                s.decide("shared-" + std::to_string(i % 100));
+            }
+        });
+    }
+    for (auto& t : ts) t.join();
+    CHECK(s.tracked() == 100);
+    // 8 threads x 2000 hits over 100 fingerprints = 160 hits each; the next
+    // decide() must report hit 161.
+    CHECK(s.decide("shared-0").hit_count == kThreads * kPerThread / 100 + 1);
+}
+
+// --- COUNT_ONLY aggregation -------------------------------------------------
+
+static CapturedEvent count_proto(const std::string& fp, uint64_t hits) {
+    CapturedEvent ev;
+    ev.fingerprint = fp;
+    ev.mode = CaptureMode::COUNT_ONLY;
+    ev.hit_count = hits;
+    ev.exception_type = "java/lang/IllegalStateException";
+    return ev;
+}
+
+static void test_count_aggregator_folds_occurrences() {
+    CountAggregator agg;
+    for (int i = 1; i <= 5; ++i) agg.record("fp-a", count_proto("fp-a", 100 + i));
+    agg.record("fp-b", count_proto("fp-b", 7));
+    CHECK(agg.pending() == 2);
+
+    std::vector<std::string> out;
+    agg.drain(out, /*force=*/true);
+    CHECK(out.size() == 2);
+    CHECK(agg.pending() == 0);
+
+    std::string a = out[0].find("fp-a") != std::string::npos ? out[0] : out[1];
+    CHECK(a.find("\"occurrences\":5") != std::string::npos);   // 5 folded throws
+    CHECK(a.find("\"hitCount\":105") != std::string::npos);    // freshest counter
+    CHECK(a.find("\"captureMode\":\"COUNT_ONLY\"") != std::string::npos);
+}
+
+static void test_count_aggregator_respects_flush_interval() {
+    CountAggregator agg;
+    agg.record("fp", count_proto("fp", 1));
+    std::vector<std::string> out;
+    agg.drain(out, /*force=*/false);  // interval not elapsed -> nothing leaves
+    CHECK(out.empty());
+    CHECK(agg.pending() == 1);
+    agg.drain(out, /*force=*/true);
+    CHECK(out.size() == 1);
+}
+
+static void test_count_aggregator_bounds_entries() {
+    CountAggregator agg;
+    for (size_t i = 0; i < CountAggregator::kMaxEntries + 50; ++i) {
+        std::string fp = "fp-" + std::to_string(i);
+        agg.record(fp, count_proto(fp, 1));
+    }
+    CHECK(agg.pending() == CountAggregator::kMaxEntries);
+    CHECK(agg.overflow_dropped() == 50);  // overflow counted, not silent
 }
 
 static void test_json_escape() {
@@ -239,6 +310,10 @@ int main() {
     test_filters();
     test_sampler_tiers();
     test_sampler_lru_bound();
+    test_sampler_default_bound_and_thread_safety();
+    test_count_aggregator_folds_occurrences();
+    test_count_aggregator_respects_flush_interval();
+    test_count_aggregator_bounds_entries();
     test_json_escape();
     test_config_parse();
     test_redact_matches();

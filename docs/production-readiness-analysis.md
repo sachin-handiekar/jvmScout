@@ -2,6 +2,15 @@
 
 **Date:** 2026-07-05
 **Scope:** `agent/` (C++17 JVMTI agent), `bci-classfile/` (Java bytecode transformer), `collector/` (Python FastAPI collector), deployment/CI surface.
+
+> **Remediation status (updated 2026-07-05, branch `fix/production-hardening`):**
+> all P0 items and P1 items 6–10 from §9 have been implemented and verified
+> (C1 partially: SQLite WAL/indexes/batching/SQL-aggregation landed; first-class
+> Postgres + migrations remain P2). Fixed: C2 (verify-or-fallback mitigation),
+> C3, C4 (+`occurrences` wire field), C5, H1, H2 (method cache + sharded
+> sampler), H3 (COUNT_ONLY aggregation), H4, H5, H6, H7 (token-keyed rate
+> limit; `?key=` removal still open), H8, H9, M1, M7. Findings below are kept
+> as originally written for the audit trail; see git history for the fixes.
 **Reviewed as:** an expert JVM/JVMTI engineer assessing readiness for real-world production use with **concurrent users** (many dashboard viewers, many tenants) and **multiple instrumented applications** (many JVMs reporting concurrently).
 
 ---

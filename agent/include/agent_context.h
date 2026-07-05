@@ -6,9 +6,11 @@
 #include <memory>
 
 #include "config.h"
+#include "count_aggregator.h"
 #include "ifilter.h"
 #include "itransport.h"
 #include "async_queue.h"
+#include "method_info_cache.h"
 #include "sampling.h"
 #include "object_inspector.h"
 #include "bci_shadow.h"
@@ -28,6 +30,8 @@ struct AgentContext {
     std::unique_ptr<ObjectInspector> inspector;
     Sampler sampler;
     BciShadow shadow;
+    MethodInfoCache method_cache;   // per-jmethodID metadata (pre-decision path)
+    CountAggregator aggregator;     // COUNT_ONLY occurrence batching
 
     // Resolved once at VM_INIT when bci=true (global ref + static transform id).
     jclass bci_transformer_class = nullptr;

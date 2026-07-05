@@ -52,6 +52,8 @@ void JNICALL vm_death(jvmtiEnv* /*jvmti*/, JNIEnv* /*jni*/) {
     if (!ctx) return;
     ctx->started.store(false, std::memory_order_release);
     if (ctx->queue) {
+        // Ship any buffered COUNT_ONLY summaries before the final drain.
+        flush_pending_counts(*ctx, /*force=*/true);
         ctx->queue->stop();  // drains remaining events (bounded drain deadline)
         // Read after stop() so drops incurred during the final drain are counted.
         uint64_t dropped = ctx->queue->dropped();
@@ -172,14 +174,37 @@ Agent_OnLoad(JavaVM* vm, char* options, void* /*reserved*/) {
 
 extern "C" JNIEXPORT jint JNICALL
 Agent_OnAttach(JavaVM* vm, char* options, void* reserved) {
-    // Dynamic attach uses the same load path; the Exception callback gates on
-    // ctx->started which we set immediately for attach (VM already initialized).
+    // Dynamic attach uses the same load path, but VM_INIT never fires (the VM
+    // is already live), so the work vm_init would do must happen here: BCI
+    // bring-up and the one-time agent_start registration event — without it an
+    // attached JVM never appears in the dashboard's instance list.
     jint rc = Agent_OnLoad(vm, options, reserved);
-    if (rc == JNI_OK) {
-        if (AgentContext* ctx = agent_context()) {
-            ctx->started.store(true, std::memory_order_release);
+    if (rc != JNI_OK) return rc;
+    AgentContext* ctx = agent_context();
+    if (!ctx) return rc;
+
+    JNIEnv* jni = nullptr;
+    if (vm->GetEnv(reinterpret_cast<void**>(&jni), JNI_VERSION_1_6) == JNI_OK &&
+        jni != nullptr) {
+        if (ctx->config.bci) {
+            // Only classes loaded from now on are instrumented.
+            bci_engine::initialize(*ctx, ctx->jvmti, jni);
         }
+        ctx->started.store(true, std::memory_order_release);
+        if (ctx->queue) {
+            try {
+                ctx->queue->enqueue(build_agent_start_event(*ctx, ctx->jvmti, jni));
+            } catch (...) {
+                if (jni->ExceptionCheck()) jni->ExceptionClear();
+            }
+        }
+    } else {
+        // No JNIEnv on this thread (unexpected): still enable capture.
+        ctx->started.store(true, std::memory_order_release);
     }
+    std::fprintf(stdout, "[jvmti-agent] attached (Agent_OnAttach). instance=%s\n",
+                 ctx->config.instance_id.c_str());
+    std::fflush(stdout);
     return rc;
 }
 

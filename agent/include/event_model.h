@@ -53,7 +53,9 @@ struct ThreadDetails {
 struct CapturedEvent {
     std::string fingerprint;
     CaptureMode mode = CaptureMode::FULL;
-    uint64_t hit_count = 0;
+    uint64_t hit_count = 0;    // cumulative per-fingerprint counter (display)
+    uint64_t occurrences = 1;  // real throws this event represents (>1 for
+                               // aggregated COUNT_ONLY summaries)
     std::string timestamp;  // ISO-8601 UTC
     std::string deployment_id;
     std::string environment;
