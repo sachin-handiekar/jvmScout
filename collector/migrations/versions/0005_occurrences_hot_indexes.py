@@ -1,7 +1,7 @@
 """add exceptions.occurrences + hot-path indexes
 
-Revision ID: 0004_occurrences_hot_indexes
-Revises: 0003_config_project_id
+Revision ID: 0005_occurrences_hot_indexes
+Revises: 0004_source_classes
 Create Date: 2026-07-05
 
 `occurrences` is how many real throws a row represents: 1 for normal events,
@@ -13,8 +13,8 @@ alerts, and retention purge all filter on received_at.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0004_occurrences_hot_indexes"
-down_revision = "0003_config_project_id"
+revision = "0005_occurrences_hot_indexes"
+down_revision = "0004_source_classes"
 branch_labels = None
 depends_on = None
 

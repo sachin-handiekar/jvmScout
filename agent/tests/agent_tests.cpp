@@ -16,11 +16,22 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#include <stdlib.h>
+static void set_env(const char* k, const char* v) { _putenv_s(k, v ? v : ""); }
+static void unset_env(const char* k) { _putenv_s(k, ""); }
+#else
+#include <stdlib.h>
+static void set_env(const char* k, const char* v) { setenv(k, v ? v : "", 1); }
+static void unset_env(const char* k) { unsetenv(k); }
+#endif
 
 static int g_fail = 0;
 
@@ -207,6 +218,75 @@ static void test_config_api_key_file() {
     CHECK(inline_key.api_key == "inline_k");
 }
 
+static void test_yaml_parse() {
+    // Scalars, block sequence, inline flow sequence, comments, quoted values.
+    const char* yaml =
+        "# jvmscout settings\n"
+        "host: collector.internal   # trailing comment\n"
+        "port: 9090\n"
+        "bci: true\n"
+        "deployment: \"checkout\"\n"
+        "bci_packages:\n"
+        "  - com.acme\n"
+        "  - com.acme.payments\n"
+        "capture_packages: [com.x, com.y, com.z]\n";
+    AgentConfig cfg = parse_config("");   // start from defaults
+    parse_yaml_config(yaml, cfg);
+    CHECK(cfg.host == "collector.internal");
+    CHECK(cfg.port == 9090);
+    CHECK(cfg.bci == true);
+    CHECK(cfg.deployment == "checkout");          // quotes stripped
+    CHECK(cfg.bci_packages.size() == 2);
+    CHECK(cfg.bci_packages[1] == "com.acme.payments");
+    CHECK(cfg.capture_packages.size() == 3);      // inline flow sequence
+    CHECK(cfg.capture_packages[2] == "com.z");
+}
+
+static void test_build_config_precedence() {
+    // Write a temp YAML file and point JVMSCOUT_CONFIG at it.
+    std::string dir;
+    if (const char* t = std::getenv("TMP")) dir = t;
+    else if (const char* t2 = std::getenv("TMPDIR")) dir = t2;
+    else dir = "/tmp";
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') dir += '/';
+    std::string path = dir + "jvmscout_test.yaml";
+    {
+        std::ofstream f(path);
+        f << "host: from_file\nport: 1111\ndeployment: file_dep\n";
+    }
+    set_env("JVMSCOUT_CONFIG", path.c_str());
+    unset_env("JVMSCOUT_HOST");
+    unset_env("JVMSCOUT_DEPLOYMENT");
+
+    // File only.
+    AgentConfig a = build_config("");
+    CHECK(a.host == "from_file");
+    CHECK(a.port == 1111);
+    CHECK(a.deployment == "file_dep");
+
+    // Env overrides file.
+    set_env("JVMSCOUT_DEPLOYMENT", "env_dep");
+    AgentConfig b = build_config("");
+    CHECK(b.deployment == "env_dep");
+    CHECK(b.host == "from_file");          // untouched key still from file
+
+    // agentpath option overrides both env and file.
+    AgentConfig c = build_config("host=from_opt,deployment=opt_dep");
+    CHECK(c.host == "from_opt");
+    CHECK(c.deployment == "opt_dep");
+    CHECK(c.port == 1111);                 // untouched key still from file
+
+    unset_env("JVMSCOUT_CONFIG");
+    unset_env("JVMSCOUT_DEPLOYMENT");
+    std::remove(path.c_str());
+
+    // No file / no env: identical to parse_config (defaults + options).
+    AgentConfig d = build_config("port=7777");
+    CHECK(d.port == 7777);
+    CHECK(d.host == "localhost");
+    CHECK(!d.deny.empty());                // built-in defaults still applied
+}
+
 static void test_redact_matches() {
     std::vector<std::string> pats = {"password", "secret", "token"};
     CHECK(redact_matches(pats, "userPassword") == true);   // case-insensitive substring
@@ -338,6 +418,8 @@ int main() {
     test_json_escape();
     test_config_parse();
     test_config_api_key_file();
+    test_yaml_parse();
+    test_build_config_precedence();
     test_redact_matches();
     test_async_queue_bounded_drops();
     test_async_queue_no_drop_during_outage();

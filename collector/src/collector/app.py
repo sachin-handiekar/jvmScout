@@ -2,11 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 import logging
 import os
-import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -42,30 +39,16 @@ def _resolve_ui_dir() -> str:
     return os.path.join(_REPO_ROOT, "ui")
 
 
-# Matches inline <script>…</script> blocks (those WITHOUT a src= attribute),
-# capturing the script body so we can hash it for a strict script-src.
-_INLINE_SCRIPT_RE = re.compile(
-    r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE
-)
+def _build_csp() -> str | None:
+    """Construct the Content-Security-Policy for the dashboard. Override entirely
+    with ``COLLECTOR_CSP`` (set it empty to disable).
 
-
-def _script_hashes(html: str) -> list[str]:
-    """SHA-256 (base64) CSP hashes for every inline script in the shell, so the
-    SPA's bootstrap scripts run under a strict script-src without 'unsafe-inline'.
-    The browser hashes the exact text content of each inline <script>, which is
-    what we capture here."""
-    hashes: list[str] = []
-    for body in _INLINE_SCRIPT_RE.findall(html):
-        digest = hashlib.sha256(body.encode("utf-8")).digest()
-        hashes.append(f"'sha256-{base64.b64encode(digest).decode('ascii')}'")
-    return hashes
-
-
-def _build_csp(shell_path: str | None) -> str | None:
-    """Construct the Content-Security-Policy. Override entirely with
-    ``COLLECTOR_CSP`` (set it empty to disable). Otherwise build a policy that
-    allows the SPA's hashed inline scripts, same-origin XHR/WebSocket, and the
-    Google Fonts stylesheet/fonts the shell references.
+    ``script-src`` allows ``'unsafe-inline'`` because the TanStack Start SPA
+    injects inline bootstrap/hydration scripts at runtime (router-state
+    streaming) that can't be statically hashed or nonced from a plain static
+    file server. The policy still blocks external script origins and ``eval``
+    (no ``'unsafe-eval'``), and keeps default-src/object-src/frame-ancestors/
+    connect-src locked down.
 
     NOTE: if the dashboard is configured to reach a *cross-origin* collector
     (``VITE_COLLECTOR_URL``), set ``COLLECTOR_CSP`` to add that origin to
@@ -75,16 +58,6 @@ def _build_csp(shell_path: str | None) -> str | None:
     if override is not None:
         return override.strip() or None
 
-    script_src = "'self'"
-    if shell_path and os.path.isfile(shell_path):
-        try:
-            with open(shell_path, "r", encoding="utf-8") as fh:
-                hashes = _script_hashes(fh.read())
-            if hashes:
-                script_src = "'self' " + " ".join(hashes)
-        except OSError:
-            log.warning("could not read shell for CSP hashing: %s", shell_path)
-
     return "; ".join([
         "default-src 'self'",
         "base-uri 'self'",
@@ -93,7 +66,7 @@ def _build_csp(shell_path: str | None) -> str | None:
         "img-src 'self' data:",
         "font-src 'self' https://fonts.gstatic.com data:",
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-        f"script-src {script_src}",
+        "script-src 'self' 'unsafe-inline'",
         "connect-src 'self' ws: wss:",
         "form-action 'self'",
     ])
@@ -159,7 +132,7 @@ def create_app() -> FastAPI:
 
     ui_dir = _resolve_ui_dir()
     shell = os.path.join(ui_dir, "_shell.html")
-    csp = _build_csp(shell if os.path.isfile(shell) else None)
+    csp = _build_csp()
     # Operators can run the policy in report-only mode first (it then never
     # blocks resources, only reports) to validate before enforcing.
     csp_header = (

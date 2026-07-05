@@ -417,7 +417,9 @@ async function detailFrames(snapshotId: string): Promise<{ frames: FrameRow[]; v
       file: f.sourceFile ?? f.source_file ?? "",
       line: f.lineNumber ?? f.line_number ?? 0,
       in_user_code: f.isAppCode ?? f.is_app_code ?? false,
-      source_snippet: null,
+      // Decompiled source the collector attaches per app frame (null if no
+      // bytecode was captured / no decompiler is available).
+      source_snippet: f.sourceSnippet ?? f.source_snippet ?? null,
     });
     const locals: any[] = f.localVariables ?? f.local_variables ?? [];
     locals.forEach((v, vi) => {
@@ -499,6 +501,19 @@ export async function createApiToken(
       role: opts?.role || undefined,
     }),
   });
+}
+
+export interface ResetDataResult {
+  deleted: { exceptions: number; instances: number; source_classes: number };
+}
+
+/**
+ * Admin reset: permanently delete all captured monitoring data (events,
+ * JVM instances, decompiler source classes) for the caller's tenant. Requires
+ * an admin API key; configuration (tokens, rules, team) is left untouched.
+ */
+export async function resetAllData(): Promise<ResetDataResult> {
+  return http<ResetDataResult>(`/admin/data?confirm=true`, { method: "DELETE" });
 }
 
 /** Live event stream over the collector WebSocket. */

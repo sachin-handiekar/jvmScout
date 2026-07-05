@@ -4,8 +4,11 @@
 #include "platform.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <string>
+#include <vector>
 
 // CLASS_FILE_LOAD_HOOK driving + JAR injection. The Java-side transformer
 // (bci-classfile) does the actual bytecode work; this is the native plumbing.
@@ -16,12 +19,41 @@ namespace {
 // (the first time BciTransformer.transform runs) itself triggers load hooks.
 thread_local bool t_in_transform = false;
 
+bool file_exists(const std::string& p) {
+    if (p.empty()) return false;
+    std::ifstream f(p);
+    return f.good();
+}
+
+// Locate bci-transform.jar. Prefer the directory of the loaded agent library
+// (the standard layout ships the jar next to it). Fall back to JVMSCOUT_HOME —
+// important on POSIX, where this_library_path() may be empty so the library dir
+// can't be derived. Returns the first existing candidate, else "" (the caller
+// then asks for an explicit bci_jar).
 std::string default_jar_path() {
+    std::vector<std::string> candidates;
+
     std::string lib = platform::this_library_path();
-    if (lib.empty()) return "";
-    size_t slash = lib.find_last_of("/\\");
-    std::string dir = (slash == std::string::npos) ? "" : lib.substr(0, slash + 1);
-    return dir + "bci-transform.jar";
+    if (!lib.empty()) {
+        size_t slash = lib.find_last_of("/\\");
+        std::string dir = (slash == std::string::npos) ? "" : lib.substr(0, slash + 1);
+        candidates.push_back(dir + "bci-transform.jar");
+    }
+
+    if (const char* home = std::getenv("JVMSCOUT_HOME"); home && *home) {
+        std::string h = home;
+        char last = h.back();
+        if (last != '/' && last != '\\') h += '/';
+        candidates.push_back(h + "lib/bci-transform.jar");
+        candidates.push_back(h + "bci-transform.jar");
+    }
+
+    for (const auto& c : candidates) {
+        if (file_exists(c)) return c;
+    }
+    // Nothing found on disk: fall back to the library-relative path (best effort)
+    // so the original behaviour (and its error message) is preserved.
+    return candidates.empty() ? "" : candidates.front();
 }
 
 // Normalize a user-supplied package pattern to the internal '/' form used for

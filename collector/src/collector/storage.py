@@ -67,6 +67,20 @@ class JvmInstanceRow(Base):
     raw_json: Mapped[str] = mapped_column(Text)
 
 
+class SourceClassRow(Base):
+    """Original class-file bytes of an app class (base64), shipped by the agent
+    so the collector can decompile it on demand for the dashboard source view.
+    One row per (project, class). Stored as opaque base64 text."""
+
+    __tablename__ = "source_classes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    class_name: Mapped[str] = mapped_column(String(256), index=True)  # slash form
+    received_at: Mapped[str] = mapped_column(String(32))
+    bytecode_b64: Mapped[str] = mapped_column(Text)
+
+
 class ConfigEntityRow(Base):
     """Generic JSON store for UI-managed config (alert rules, integrations,
     redaction rules, API tokens, team members, workspace settings). Each row is
@@ -337,6 +351,24 @@ async def delete_all_exceptions(project_id: Optional[str] = None) -> int:
         return result.rowcount or 0
 
 
+async def delete_all_instances(project_id: Optional[str] = None) -> int:
+    async with session() as s:
+        stmt = _apply_project(
+            delete(JvmInstanceRow), project_id, JvmInstanceRow.project_id)
+        result = await s.execute(stmt)
+        await s.commit()
+        return result.rowcount or 0
+
+
+async def delete_all_source_classes(project_id: Optional[str] = None) -> int:
+    async with session() as s:
+        stmt = _apply_project(
+            delete(SourceClassRow), project_id, SourceClassRow.project_id)
+        result = await s.execute(stmt)
+        await s.commit()
+        return result.rowcount or 0
+
+
 async def stats(project_id: Optional[str] = None) -> dict:
     def scoped(q):
         return _apply_project(q, project_id, ExceptionRow.project_id)
@@ -526,6 +558,38 @@ async def fingerprint_row_count(fingerprint: str,
     q = _apply_project(q, project_id, ExceptionRow.project_id)
     async with session() as s:
         return int(await s.scalar(q) or 0)
+
+
+async def store_source_class(project_id: Optional[str], class_name: str,
+                             bytecode_b64: str) -> None:
+    """Upsert the bytecode for one app class (slash name) within a project."""
+    if not class_name or not bytecode_b64:
+        return
+    async with session() as s:
+        q = select(SourceClassRow).where(SourceClassRow.class_name == class_name)
+        q = _apply_project(q, project_id, SourceClassRow.project_id)
+        existing = await s.scalar(q)
+        if existing:
+            existing.bytecode_b64 = bytecode_b64
+            existing.received_at = _now_iso()
+        else:
+            s.add(SourceClassRow(
+                project_id=project_id,
+                class_name=class_name,
+                received_at=_now_iso(),
+                bytecode_b64=bytecode_b64,
+            ))
+        await s.commit()
+
+
+async def get_source_class(class_name: str,
+                           project_id: Optional[str] = None) -> Optional[str]:
+    """Return the base64 bytecode for a class (slash name) in the tenant, or None."""
+    q = select(SourceClassRow.bytecode_b64).where(
+        SourceClassRow.class_name == class_name)
+    q = _apply_project(q, project_id, SourceClassRow.project_id)
+    async with session() as s:
+        return await s.scalar(q)
 
 
 async def list_instances(project_id: Optional[str] = None) -> list[dict]:

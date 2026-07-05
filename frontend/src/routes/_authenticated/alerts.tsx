@@ -49,7 +49,7 @@ import { relativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/alerts")({
-  head: () => ({ meta: [{ title: "Alerts — Stackline" }] }),
+  head: () => ({ meta: [{ title: "Alerts — jvmScout" }] }),
   component: AlertsPage,
 });
 

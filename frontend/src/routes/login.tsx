@@ -9,7 +9,7 @@ import { useAuth } from "@/lib/auth";
 export const Route = createFileRoute("/login")({
   head: () => ({
     meta: [
-      { title: "Sign in — Stackline" },
+      { title: "Sign in — jvmScout" },
       { name: "description", content: "Connect to your JVMTI exception collector." },
     ],
   }),
@@ -49,7 +49,7 @@ function LoginPage() {
             <Activity className="h-4 w-4" />
           </div>
           <div className="leading-tight">
-            <div className="text-sm font-semibold">Stackline</div>
+            <div className="text-sm font-semibold">jvmScout</div>
             <div className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
               jvm reliability
             </div>
