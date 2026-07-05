@@ -125,21 +125,23 @@ static void test_redact_matches() {
 
 // --- async queue / collector-down behavior --------------------------------
 
-// Controllable in-memory transport. `up` toggles collector availability;
-// `delivered` counts events in successfully-sent batches (each test event is
-// the single token "x", so the count is the number of 'x' bytes in the body).
+// Controllable in-memory transport. `result` selects the outcome of every
+// send; `delivered` counts events in successfully-sent batches (each test
+// event is the single token "x", so the count is the number of 'x' bytes in
+// the body).
 class FakeTransport : public ITransport {
 public:
-    std::atomic<bool> up{true};
+    std::atomic<SendResult> result{SendResult::kOk};
     std::atomic<int> send_calls{0};
     std::atomic<int> delivered{0};
-    bool send(const std::string& body) override {
+    SendResult send(const std::string& body) override {
         send_calls.fetch_add(1, std::memory_order_relaxed);
-        if (!up.load()) return false;
+        SendResult r = result.load();
+        if (r != SendResult::kOk) return r;
         int n = 0;
         for (char c : body) if (c == 'x') ++n;
         delivered.fetch_add(n, std::memory_order_relaxed);
-        return true;
+        return r;
     }
     const char* name() const override { return "fake"; }
 };
@@ -165,7 +167,7 @@ static void test_async_queue_bounded_drops() {
 // the worker retries without dropping anything while under capacity.
 static void test_async_queue_no_drop_during_outage() {
     FakeTransport t;
-    t.up = false;  // collector unreachable
+    t.result = SendResult::kRetryable;  // collector unreachable
     AsyncQueue q(&t, "test");
     q.start();
 
@@ -180,7 +182,7 @@ static void test_async_queue_no_drop_during_outage() {
 
 // Collector up: enqueued events are batched and delivered, none dropped.
 static void test_async_queue_delivers_when_up() {
-    FakeTransport t;  // up by default
+    FakeTransport t;  // kOk by default
     AsyncQueue q(&t, "test");
     q.start();
 
@@ -191,6 +193,45 @@ static void test_async_queue_delivers_when_up() {
     CHECK(t.delivered.load() == N);
     CHECK(q.dropped() == 0);
     q.stop();
+}
+
+// A definitive 4xx rejection (revoked token, bad endpoint) must not be
+// retried: the batch is dropped immediately and counted.
+static void test_async_queue_permanent_rejection_drops_without_retry() {
+    FakeTransport t;
+    t.result = SendResult::kPermanent;
+    AsyncQueue q(&t, "test");
+    q.start();
+
+    const int N = AsyncQueue::kBatchSize;  // exactly one batch
+    for (int i = 0; i < N; ++i) CHECK(q.enqueue("x"));
+
+    poll_until([&] { return q.dropped() >= static_cast<uint64_t>(N); }, 5000);
+    CHECK(q.dropped() == static_cast<uint64_t>(N));  // dropped, counted
+    CHECK(t.send_calls.load() == 1);                 // exactly one attempt, no retries
+    q.stop();
+}
+
+// stop() with an unreachable collector must return quickly (bounded drain) and
+// account for every undelivered event in dropped() — VM_DEATH runs on the host
+// application's shutdown path and must never hang it.
+static void test_async_queue_shutdown_is_bounded_and_counts_drops() {
+    FakeTransport t;
+    t.result = SendResult::kRetryable;  // collector down
+    AsyncQueue q(&t, "test");
+    q.start();
+
+    const int N = 100;  // several batches
+    for (int i = 0; i < N; ++i) CHECK(q.enqueue("x"));
+    poll_until([&] { return t.send_calls.load() >= 1; }, 3000);
+
+    auto begin = std::chrono::steady_clock::now();
+    q.stop();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - begin)
+                       .count();
+    CHECK(elapsed < AsyncQueue::kShutdownDrainMs + 2000);  // bounded, not per-batch timeouts
+    CHECK(q.dropped() == static_cast<uint64_t>(N));        // losses are visible
 }
 
 int main() {
@@ -204,6 +245,8 @@ int main() {
     test_async_queue_bounded_drops();
     test_async_queue_no_drop_during_outage();
     test_async_queue_delivers_when_up();
+    test_async_queue_permanent_rejection_drops_without_retry();
+    test_async_queue_shutdown_is_bounded_and_counts_drops();
     if (g_fail == 0) std::printf("ALL %s\n", "PASS");
     else std::printf("%d CHECK(S) FAILED\n", g_fail);
     return g_fail ? 1 : 0;

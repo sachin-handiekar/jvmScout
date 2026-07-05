@@ -38,24 +38,24 @@ public:
         }
     }
 
-    bool send(const std::string& body) override {
+    SendResult send(const std::string& body) override {
         Handle session;
         session.h = WinHttpOpen(L"jvmti-agent/1.0",
                                 WINHTTP_ACCESS_TYPE_NO_PROXY,
                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-        if (!session.h) return false;
+        if (!session.h) return SendResult::kRetryable;
         WinHttpSetTimeouts(session.h, timeout_, timeout_, timeout_, timeout_);
 
         Handle connect;
         connect.h = WinHttpConnect(session.h, host_.c_str(), port_, 0);
-        if (!connect.h) return false;
+        if (!connect.h) return SendResult::kRetryable;
 
         Handle request;
         const DWORD request_flags = https_ ? WINHTTP_FLAG_SECURE : 0;
         request.h = WinHttpOpenRequest(connect.h, L"POST", path_.c_str(), nullptr,
                                        WINHTTP_NO_REFERER,
                                        WINHTTP_DEFAULT_ACCEPT_TYPES, request_flags);
-        if (!request.h) return false;
+        if (!request.h) return SendResult::kRetryable;
 
         if (https_ && tls_insecure_) {
             // Testing/self-signed only: ignore certificate validation errors.
@@ -70,9 +70,9 @@ public:
                                 const_cast<char*>(body.data()),
                                 static_cast<DWORD>(body.size()),
                                 static_cast<DWORD>(body.size()), 0)) {
-            return false;
+            return SendResult::kRetryable;
         }
-        if (!WinHttpReceiveResponse(request.h, nullptr)) return false;
+        if (!WinHttpReceiveResponse(request.h, nullptr)) return SendResult::kRetryable;
 
         DWORD status = 0;
         DWORD len = sizeof(status);
@@ -81,9 +81,9 @@ public:
                 WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                 WINHTTP_HEADER_NAME_BY_INDEX, &status, &len,
                 WINHTTP_NO_HEADER_INDEX)) {
-            return false;
+            return SendResult::kRetryable;
         }
-        return status >= 200 && status < 300;
+        return classify_http_status(static_cast<long>(status));
     }
 
     const char* name() const override { return "winhttp"; }

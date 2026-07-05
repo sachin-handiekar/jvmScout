@@ -27,6 +27,9 @@ class ExceptionRow(Base):
     timestamp: Mapped[Optional[str]] = mapped_column(String(32))
     fingerprint: Mapped[str] = mapped_column(String(64), index=True)
     capture_mode: Mapped[Optional[str]] = mapped_column(String(16))
+    # Cumulative lifetime occurrence counter for the fingerprint, as reported by
+    # the agent at capture time ("this was the Nth hit"). Display only — each
+    # row is exactly one occurrence, so aggregate with COUNT(*), never SUM().
     hit_count: Mapped[int] = mapped_column(Integer, default=1)
     # Tenant the event belongs to, derived authoritatively from the ingest token
     # (NULL for events ingested with the master key / when auth is disabled).
@@ -324,8 +327,11 @@ async def event_series(*, hours: int, buckets: int,
                        project_id: Optional[str] = None) -> dict:
     """Per-fingerprint bucketed occurrence counts over the last `hours`.
 
-    Returns, for every fingerprint seen in the window, its total occurrences
-    (summed `hit_count`) and a per-bucket array. This is the real data behind the
+    Returns, for every fingerprint seen in the window, its total occurrences and
+    a per-bucket array. Each stored row is exactly one occurrence: the agent
+    emits one event per throw, and its `hit_count` field is a *cumulative*
+    lifetime counter for display ("seen N times"), NOT a per-event delta —
+    summing it would overcount quadratically. This is the real data behind the
     dashboard's per-event hit counts, sparklines, and rising/falling trend — no
     client-side fabrication. Buckets by collector receive time."""
     now = datetime.now(timezone.utc)
@@ -335,7 +341,7 @@ async def event_series(*, hours: int, buckets: int,
     bucket_s = max(1.0, (hours * 3600.0) / buckets)
 
     q = select(
-        ExceptionRow.received_at, ExceptionRow.fingerprint, ExceptionRow.hit_count,
+        ExceptionRow.received_at, ExceptionRow.fingerprint,
     ).where(ExceptionRow.received_at >= start_iso)
     if environment:
         q = q.where(_env_clause(environment))
@@ -345,7 +351,7 @@ async def event_series(*, hours: int, buckets: int,
         rows = (await s.execute(q)).all()
 
     series: dict[str, dict] = {}
-    for received_at, fingerprint, hit_count in rows:
+    for received_at, fingerprint in rows:
         if not fingerprint:
             continue
         try:
@@ -359,9 +365,8 @@ async def event_series(*, hours: int, buckets: int,
         if entry is None:
             entry = {"total": 0, "buckets": [0] * buckets}
             series[fingerprint] = entry
-        h = hit_count or 1
-        entry["total"] += h
-        entry["buckets"][idx] += h
+        entry["total"] += 1
+        entry["buckets"][idx] += 1
 
     return {
         "hours": hours,
@@ -377,11 +382,13 @@ async def count_occurrences(*, minutes: int, deployment_id: Optional[str] = None
                             exception_type: Optional[str] = None,
                             environment: Optional[str] = None,
                             project_id: Optional[str] = None) -> int:
-    """Sum `hit_count` over the last `minutes`, optionally scoped. Used by the
-    alert engine's volume-threshold evaluation."""
+    """Count occurrences over the last `minutes`, optionally scoped. Used by the
+    alert engine's volume-threshold evaluation. Each stored row is one
+    occurrence; the row's `hit_count` is a cumulative lifetime counter (display
+    only) and must never be summed."""
     start = datetime.now(timezone.utc) - timedelta(minutes=minutes)
     start_iso = start.strftime("%Y-%m-%dT%H:%M:%SZ")
-    q = select(func.coalesce(func.sum(ExceptionRow.hit_count), 0)).where(
+    q = select(func.count()).select_from(ExceptionRow).where(
         ExceptionRow.received_at >= start_iso)
     if deployment_id:
         q = q.where(ExceptionRow.deployment_id == deployment_id)

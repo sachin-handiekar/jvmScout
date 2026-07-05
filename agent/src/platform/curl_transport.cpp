@@ -21,9 +21,9 @@ public:
     }
     ~CurlTransport() override { curl_global_cleanup(); }
 
-    bool send(const std::string& body) override {
+    SendResult send(const std::string& body) override {
         CURL* curl = curl_easy_init();
-        if (!curl) return false;
+        if (!curl) return SendResult::kRetryable;
 
         struct curl_slist* headers = nullptr;
         headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -55,7 +55,8 @@ public:
 
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
-        return rc == CURLE_OK && status >= 200 && status < 300;
+        if (rc != CURLE_OK) return SendResult::kRetryable;  // network-level failure
+        return classify_http_status(status);
     }
 
     const char* name() const override { return "libcurl"; }

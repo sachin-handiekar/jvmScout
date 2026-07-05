@@ -93,7 +93,7 @@ void StackWalker::capture_frame_locals(JNIEnv* jni, jthread thread, jint depth,
     if (err != JVMTI_ERROR_NONE || table == nullptr) {
         // No debug info (no -g). Fall back to BCI shadow-captured locals.
         if (shadow_ && shadow_->ready()) {
-            shadow_->read_frame(jni, depth, frame.locals);
+            shadow_->read_frame(jni, depth, inspector_, frame.locals);
         }
         return;
     }

@@ -22,8 +22,10 @@ void JNICALL vm_init(jvmtiEnv* jvmti, JNIEnv* jni, jthread /*thread*/) {
         bci_engine::initialize(*ctx, jvmti, jni);
     }
 
-    // From here on the Exception callback is allowed to capture.
-    ctx->started = true;
+    // From here on the Exception callback is allowed to capture. Release store:
+    // publishes the BCI transformer class/method set above to the callbacks'
+    // acquire loads.
+    ctx->started.store(true, std::memory_order_release);
 
     // One-time agent_start registration event.
     if (ctx->queue) {
@@ -48,12 +50,15 @@ void JNICALL vm_init(jvmtiEnv* jvmti, JNIEnv* jni, jthread /*thread*/) {
 void JNICALL vm_death(jvmtiEnv* /*jvmti*/, JNIEnv* /*jni*/) {
     AgentContext* ctx = agent_context();
     if (!ctx) return;
-    ctx->started = false;
+    ctx->started.store(false, std::memory_order_release);
     if (ctx->queue) {
+        ctx->queue->stop();  // drains remaining events (bounded drain deadline)
+        // Read after stop() so drops incurred during the final drain are counted.
         uint64_t dropped = ctx->queue->dropped();
-        ctx->queue->stop();  // drains remaining events
         if (dropped > 0) {
-            std::fprintf(stderr, "[jvmti-agent] %llu events dropped (queue full)\n",
+            std::fprintf(stderr,
+                         "[jvmti-agent] %llu events dropped (queue full / "
+                         "undeliverable at shutdown)\n",
                          static_cast<unsigned long long>(dropped));
         }
     }
@@ -171,7 +176,9 @@ Agent_OnAttach(JavaVM* vm, char* options, void* reserved) {
     // ctx->started which we set immediately for attach (VM already initialized).
     jint rc = Agent_OnLoad(vm, options, reserved);
     if (rc == JNI_OK) {
-        if (AgentContext* ctx = agent_context()) ctx->started = true;
+        if (AgentContext* ctx = agent_context()) {
+            ctx->started.store(true, std::memory_order_release);
+        }
     }
     return rc;
 }

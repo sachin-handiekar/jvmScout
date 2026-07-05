@@ -8,6 +8,8 @@
 
 #include "event_model.h"
 
+class ObjectInspector;
+
 // JNI bridge to the bootstrap-injected __JvmtiShadow class. When bytecode
 // instrumentation is active, application methods stash their locals into
 // __JvmtiShadow's per-thread frame arrays; this reads them back at capture time
@@ -19,9 +21,13 @@ public:
     bool ensure_ready(JNIEnv* jni);
     bool ready() const { return ready_.load(std::memory_order_acquire); }
 
-    // Append shadow-sourced locals for stack depth `depth` into `out`.
-    // Returns true if any were added. No-op when not ready.
-    bool read_frame(JNIEnv* jni, int depth, std::vector<LocalVariable>& out);
+    // Append shadow-sourced locals for stack depth `depth` into `out`, rendering
+    // values with the caller's long-lived `inspector` (its JDK class cache holds
+    // agent-lifetime global refs; constructing a transient inspector here would
+    // leak 6 global refs per call). Returns true if any were added. No-op when
+    // not ready.
+    bool read_frame(JNIEnv* jni, int depth, const ObjectInspector* inspector,
+                    std::vector<LocalVariable>& out);
 
 private:
     // ready_ is published with release semantics once initialization fully

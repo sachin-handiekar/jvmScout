@@ -2,6 +2,7 @@
 #define JVMTI_AGENT_AGENT_CONTEXT_H
 
 #include <jvmti.h>
+#include <atomic>
 #include <memory>
 
 #include "config.h"
@@ -32,7 +33,12 @@ struct AgentContext {
     jclass bci_transformer_class = nullptr;
     jmethodID bci_transform_method = nullptr;
 
-    bool started = false;  // set true after VM_INIT
+    // Set true after VM_INIT (or immediately on dynamic attach) by the init
+    // thread and read concurrently by the Exception / ClassFileLoadHook
+    // callbacks on arbitrary application threads. The release store in vm_init
+    // also publishes the BCI fields written just before it (transformer class
+    // + method id), which the load hook reads only after seeing started==true.
+    std::atomic<bool> started{false};
 
     explicit AgentContext(AgentConfig cfg) : config(std::move(cfg)) {}
 };

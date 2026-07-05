@@ -214,7 +214,7 @@ void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
     if (!guard.engaged) return;
 
     AgentContext* ctx = agent_context();
-    if (!ctx || !ctx->started) return;
+    if (!ctx || !ctx->started.load(std::memory_order_acquire)) return;
 
     try {
         JniLocalFrame frame(jni, 128);

@@ -127,13 +127,13 @@ Passed as `-agentpath:<library>=key=val,key=val,...`
 | `api_key` | (empty) | Sent as `Authorization: Bearer <key>`; the master `COLLECTOR_API_KEY` or a project-scoped **ingest** token (see Multiple apps & teams) |
 | `deployment` | (empty) | Deployment tag on every event |
 | `environment` | (empty) | Environment tag (`production`/`staging`/`development`) reported at startup; drives the dashboard's environment switcher (defaults to `production`) |
-| `console` | `true` | Print captured exceptions to stdout |
+| `console` | `false` | Print captured exceptions to the host app's stdout (debugging aid; leave off in production) |
 | `depth` | `3` | Array-nesting depth when rendering captured values (object arrays recurse up to this depth; primitive arrays show `kind[len]`). Plain object fields are summarized as `type@hash`. |
 | `timeout` | `5000` | HTTP timeout (ms) |
 | `deny` | 10 JDK patterns | Extra exception-type denylist (`;`-separated) |
 | `location_deny` | 23 framework patterns | Extra throw-site denylist |
 | `capture_packages` | (empty) | Allowlist mode — only capture throws from these packages |
-| `bci` | `false` | Enable bytecode instrumentation (shadow locals; needs JDK 24+) |
+| `bci` | `false` | **Experimental — not for production.** Enable bytecode instrumentation (shadow locals; needs JDK 24+). Adds significant per-call overhead in instrumented code; transformed classes are verifier-checked and fall back to the original bytecode on any doubt. |
 | `bci_jar` | auto (next to library) | Path to `bci-transform.jar` |
 | `bci_packages` | (empty) | BCI allowlist (`;`-separated package prefixes, dot or slash form). When set, only matching classes are instrumented. |
 | `bci_exclude` | (empty) | BCI denylist (`;`-separated prefixes); matching classes are never instrumented. Applied on top of the transformer's built-in JDK/framework excludes. |
@@ -217,9 +217,12 @@ project's events. The master key manages every project.
 
 - **With `-g`** (debug info): the agent reads locals directly from the JVMTI
   Local Variable Table (`source: "debug_info"`) — names, signatures, values.
-- **Without `-g`**: enable `bci=true`. The `java.lang.classfile` transformer
-  injects shadow-capture calls so the agent recovers local *values* by slot
-  (`source: "bci_shadow"`); the UI marks these with a ● badge.
+- **Without `-g`**: enable `bci=true` (**experimental**). The
+  `java.lang.classfile` transformer injects shadow-capture calls so the agent
+  recovers local *values* by slot (`source: "bci_shadow"`); the UI marks these
+  with a ● badge. The instrumentation adds real overhead to instrumented code
+  paths (per-call-site capture with boxing) — scope it tightly with
+  `bci_packages` and keep it out of production until it graduates.
 
 ## Database & migrations
 

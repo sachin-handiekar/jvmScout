@@ -30,11 +30,14 @@ def test_event_series_groups_by_fingerprint(client):
     assert sum(series["b"]["buckets"]) == 1
 
 
-def test_event_series_respects_hit_count(client):
+def test_event_series_counts_rows_not_cumulative_hit_count(client):
+    # hitCount on the wire is the agent's *cumulative* lifetime counter for the
+    # fingerprint, not a per-event delta: one stored event = one occurrence,
+    # regardless of how large its running counter is.
     client.post("/collector", json=exception_event(fingerprint="c", hitCount=5),
                 headers=AUTH)
     res = client.get("/stats/event-series", headers=AUTH).json()
-    assert res["series"]["c"]["total"] == 5
+    assert res["series"]["c"]["total"] == 1
 
 
 def test_event_series_environment_filter(client):
