@@ -2,12 +2,15 @@
 #define JVMTI_AGENT_AGENT_CONTEXT_H
 
 #include <jvmti.h>
+#include <atomic>
 #include <memory>
 
 #include "config.h"
+#include "count_aggregator.h"
 #include "ifilter.h"
 #include "itransport.h"
 #include "async_queue.h"
+#include "method_info_cache.h"
 #include "sampling.h"
 #include "object_inspector.h"
 #include "bci_shadow.h"
@@ -28,13 +31,20 @@ struct AgentContext {
     std::unique_ptr<ObjectInspector> inspector;
     Sampler sampler;
     BciShadow shadow;
+    MethodInfoCache method_cache;   // per-jmethodID metadata (pre-decision path)
+    CountAggregator aggregator;     // COUNT_ONLY occurrence batching
     SourceCache source_cache;  // original app-class bytes for decompiled source view
 
     // Resolved once at VM_INIT when bci=true (global ref + static transform id).
     jclass bci_transformer_class = nullptr;
     jmethodID bci_transform_method = nullptr;
 
-    bool started = false;  // set true after VM_INIT
+    // Set true after VM_INIT (or immediately on dynamic attach) by the init
+    // thread and read concurrently by the Exception / ClassFileLoadHook
+    // callbacks on arbitrary application threads. The release store in vm_init
+    // also publishes the BCI fields written just before it (transformer class
+    // + method id), which the load hook reads only after seeing started==true.
+    std::atomic<bool> started{false};
 
     explicit AgentContext(AgentConfig cfg) : config(std::move(cfg)) {}
 };

@@ -29,7 +29,15 @@ public final class BciTransformer {
 
             ClassFile cf = ClassFile.of();
             ClassModel model = cf.parse(classFileBuffer);
-            return cf.transformClass(model, ShadowClassTransform.INSTANCE);
+            byte[] out = cf.transformClass(model, ShadowClassTransform.INSTANCE);
+            if (out == null) return null;
+            // Safety net: never hand the JVM bytes its verifier would reject.
+            // The capture transform tracks local slots in linear bytecode order,
+            // which can mis-model liveness across branch merges / slot reuse; a
+            // VerifyError at class load would break the *application* class, so
+            // verify here and fall back to the original bytecode instead.
+            if (!cf.verify(out).isEmpty()) return null;
+            return out;
         } catch (Throwable t) {
             // A throwing transformer would be silently dropped by the JVM anyway;
             // returning null explicitly leaves the original bytecode in place.

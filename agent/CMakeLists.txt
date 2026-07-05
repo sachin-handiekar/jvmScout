@@ -28,6 +28,8 @@ set(CORE_SOURCES
   src/filters.cpp
   src/sampling.cpp
   src/async_queue.cpp
+  src/count_aggregator.cpp
+  src/method_info_cache.cpp
   src/fingerprint.cpp
   src/stack_walker.cpp
   src/object_inspector.cpp
@@ -96,9 +98,16 @@ if(AGENT_BUILD_TESTS)
     src/json_utils.cpp
     src/config.cpp
     src/async_queue.cpp
+    src/count_aggregator.cpp
+    src/event_serializer.cpp
     ${TEST_PLATFORM_SOURCES}
   )
-  target_include_directories(agent_tests PRIVATE include)
+  # jvmti.h is needed (header-only) by event_model.h's metric types.
+  target_include_directories(agent_tests PRIVATE
+    include
+    "${JAVA_HOME}/include"
+    "${JAVA_HOME}/include/${JNI_MD_DIR}"
+  )
   find_package(Threads REQUIRED)
   target_link_libraries(agent_tests PRIVATE Threads::Threads)
   add_test(NAME agent_tests COMMAND agent_tests)

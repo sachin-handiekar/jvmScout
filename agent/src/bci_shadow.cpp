@@ -45,8 +45,11 @@ bool BciShadow::ensure_ready(JNIEnv* jni) {
     return true;
 }
 
-bool BciShadow::read_frame(JNIEnv* jni, int depth, std::vector<LocalVariable>& out) {
-    if (!ready_ || !get_frame_) return false;
+bool BciShadow::read_frame(JNIEnv* jni, int depth, const ObjectInspector* inspector,
+                           std::vector<LocalVariable>& out) {
+    if (!ready_.load(std::memory_order_acquire) || !get_frame_ || !inspector) {
+        return false;
+    }
 
     jobjectArray values = static_cast<jobjectArray>(
         jni->CallStaticObjectMethod(shadow_class_, get_frame_, depth));
@@ -63,7 +66,6 @@ bool BciShadow::read_frame(JNIEnv* jni, int depth, std::vector<LocalVariable>& o
     }
 
     jsize n = jni->GetArrayLength(values);
-    ObjectInspector inspector(2);
     bool added = false;
     for (jsize i = 0; i < n; ++i) {
         jobject v = jni->GetObjectArrayElement(values, i);
@@ -81,7 +83,7 @@ bool BciShadow::read_frame(JNIEnv* jni, int depth, std::vector<LocalVariable>& o
         }
         // Captured primitives arrive boxed; the inspector renders them (and
         // strings/objects) the same way JVMTI-sourced locals are rendered.
-        lv.value = inspector.render(jni, v);
+        lv.value = inspector->render(jni, v);
         out.push_back(std::move(lv));
         jni->DeleteLocalRef(v);
         added = true;

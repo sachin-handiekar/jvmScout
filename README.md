@@ -292,16 +292,17 @@ identical across all three.
 | `host`, `port`, `path` | `localhost`, `8080`, `/collector` | Collector endpoint |
 | `https` | `false` | Reach the collector over TLS |
 | `tls_insecure` | `false` | Skip certificate verification (testing/self-signed only) |
-| `api_key` | (empty) | Sent as `Authorization: Bearer <key>`; the master `COLLECTOR_API_KEY` or a project-scoped **ingest** token (see Multiple apps & teams) |
+| `api_key` | (empty) | Sent as `Authorization: Bearer <key>`; the master key or a project-scoped **ingest** token (see Multiple apps & teams) |
+| `api_key_file` | (empty) | Read the key from a file instead (first line, trimmed) — keeps the secret off the process command line, which any local user can read |
 | `deployment` | (empty) | Deployment tag on every event |
 | `environment` | (empty) | Environment tag (`production`/`staging`/`development`) reported at startup; drives the dashboard's environment switcher (defaults to `production`) |
-| `console` | `true` | Print captured exceptions to stdout |
+| `console` | `false` | Print captured exceptions to the host app's stdout (debugging aid; leave off in production) |
 | `depth` | `3` | Array-nesting depth when rendering captured values (object arrays recurse up to this depth; primitive arrays show `kind[len]`). Plain object fields are summarized as `type@hash`. |
 | `timeout` | `5000` | HTTP timeout (ms) |
 | `deny` | 10 JDK patterns | Extra exception-type denylist (`;`-separated) |
 | `location_deny` | 23 framework patterns | Extra throw-site denylist |
 | `capture_packages` | (empty) | Allowlist mode — only capture throws from these packages |
-| `bci` | `false` | Enable bytecode instrumentation (shadow locals; needs JDK 24+) |
+| `bci` | `false` | **Experimental — not for production.** Enable bytecode instrumentation (shadow locals; needs JDK 24+). Adds significant per-call overhead in instrumented code; transformed classes are verifier-checked and fall back to the original bytecode on any doubt. |
 | `bci_jar` | auto (next to library) | Path to `bci-transform.jar` |
 | `bci_packages` | (empty) | BCI allowlist (`;`-separated package prefixes, dot or slash form). When set, only matching classes are instrumented. |
 | `bci_exclude` | (empty) | BCI denylist (`;`-separated prefixes); matching classes are never instrumented. Applied on top of the transformer's built-in JDK/framework excludes. |
@@ -320,10 +321,12 @@ identical across all three.
 | `COLLECTOR_HOST`, `COLLECTOR_PORT` | `0.0.0.0`, `8080` | Bind address |
 | `COLLECTOR_DB_URL` | `sqlite+aiosqlite:///./collector.db` | Database URL |
 | `COLLECTOR_RETENTION_DAYS` | `30` | Purge events older than this |
-| `COLLECTOR_API_KEY` | (empty) | **Require an API key** on all data endpoints (ingest + REST + WS). When unset, the collector runs **unauthenticated** and logs a warning — only safe on a trusted local network. |
+| `COLLECTOR_API_KEY` | (empty) | Master key (superadmin) accepted on all data endpoints (ingest + REST + WS). If unset, a **master token is bootstrapped on first start and printed once** to the logs — the collector never silently runs open. |
+| `COLLECTOR_ALLOW_ANONYMOUS` | (off) | Explicitly run **unauthenticated** (skips the bootstrap token). Only safe on a trusted local network. |
+| `COLLECTOR_ALERT_ALLOW_PRIVATE` | (off) | Allow alert webhooks to target private/internal addresses. Off by default (SSRF guard): destinations must resolve to public addresses. |
 | `COLLECTOR_CORS_ORIGINS` | (empty) | Comma-separated allowed CORS origins. Empty = no CORS (the dashboard is same-origin and needs none). |
 | `COLLECTOR_MAX_BODY_BYTES` | `5242880` | Max ingest request body size (rejects with 413). |
-| `COLLECTOR_RATE_LIMIT_PER_MIN` | `0` (off) | Per-client-IP ingest rate limit. |
+| `COLLECTOR_RATE_LIMIT_PER_MIN` | `0` (off) | Ingest rate limit, keyed per token (per client IP when anonymous). |
 | `COLLECTOR_PURGE_INTERVAL_SECONDS` | `3600` | Periodic retention purge interval (`0` disables). |
 | `COLLECTOR_CSP` | (built-in) | Override the `Content-Security-Policy` sent with the dashboard. By default a strict policy is built automatically (hashes the SPA's inline bootstrap scripts; allows same-origin XHR/WebSocket + Google Fonts). Set a custom value if the dashboard talks to a **cross-origin** collector (add that origin to `connect-src`); set empty to disable. |
 | `COLLECTOR_CSP_REPORT_ONLY` | (off) | When `1`/`true`, send the policy as `Content-Security-Policy-Report-Only` (reports violations without blocking) — useful to validate a policy before enforcing. |
@@ -332,10 +335,15 @@ identical across all three.
 
 ### Authentication
 
-Set `COLLECTOR_API_KEY` to require a key. Clients may present the key as
-`Authorization: Bearer <key>`, an `X-API-Key` header, or a `?key=` query
-parameter. `GET /healthz` is always public for liveness probes. TLS is expected
-to be terminated by a reverse proxy in front of the collector.
+Authentication is on by default. Either set `COLLECTOR_API_KEY`, or let the
+collector **bootstrap a master token on first start** (printed once in the
+startup logs — store it). Clients present the key as `Authorization: Bearer
+<key>` or an `X-API-Key` header; a `?key=` query parameter is accepted **only**
+on the WebSocket handshake (browsers can't set headers there) and is rejected
+on HTTP endpoints so keys never land in access logs. `GET /healthz` is always
+public for liveness probes; `GET /metrics` (Prometheus text format, aggregate
+operational counters) needs any read-capable token. TLS is expected to be
+terminated by a reverse proxy in front of the collector.
 
 The `COLLECTOR_API_KEY` is the **master key** (superadmin): it can do everything
 and see every project. For per-app/per-team setups, issue scoped tokens instead
@@ -407,9 +415,12 @@ decompiled and shows the method that threw rather than a pixel-exact line.
 
 - **With `-g`** (debug info): the agent reads locals directly from the JVMTI
   Local Variable Table (`source: "debug_info"`) — names, signatures, values.
-- **Without `-g`**: enable `bci=true`. The `java.lang.classfile` transformer
-  injects shadow-capture calls so the agent recovers local *values* by slot
-  (`source: "bci_shadow"`); the UI marks these with a ● badge.
+- **Without `-g`**: enable `bci=true` (**experimental**). The
+  `java.lang.classfile` transformer injects shadow-capture calls so the agent
+  recovers local *values* by slot (`source: "bci_shadow"`); the UI marks these
+  with a ● badge. The instrumentation adds real overhead to instrumented code
+  paths (per-call-site capture with boxing) — scope it tightly with
+  `bci_packages` and keep it out of production until it graduates.
 
 ## 🛢️ Database & migrations
 
@@ -423,17 +434,19 @@ PYTHONPATH=src alembic revision -m "msg" --autogenerate   # author a new migrati
 ```
 
 For zero-config local dev, `python -m collector` also calls `create_all` on
-startup, so a fresh SQLite DB just works without running Alembic. In Docker the
-container runs `alembic upgrade head` before starting. **After any schema change,
-run `alembic upgrade head`** (a plain SQLite file created by an older build won't
-auto-gain new columns — recreate it or migrate).
+startup (plus a small in-place index/column backfill), so a fresh SQLite DB
+just works without running Alembic. In Docker the container runs
+`alembic upgrade head` before starting. **After any schema change, run
+`alembic upgrade head`** — for a database originally created by `create_all`,
+run `alembic stamp head` once to adopt it, then upgrade normally. The migration
+chain and the full test suite are exercised against **PostgreSQL 16 in CI**
+(`collector-postgres` job).
 
 ### Moving from SQLite to Postgres
 
 The same models and migrations target Postgres — only the URL and driver change:
 
-1. Install the async driver: `pip install asyncpg` (already implied for Docker —
-   add it to `requirements.txt` or the image).
+1. Install dependencies (`asyncpg` ships in `requirements.txt`).
 2. Point the collector at Postgres:
    ```bash
    export COLLECTOR_DB_URL="postgresql+asyncpg://user:pass@host:5432/jvmscout"

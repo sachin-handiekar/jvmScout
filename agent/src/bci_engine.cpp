@@ -141,7 +141,10 @@ void on_class_file_load(AgentContext& ctx, jvmtiEnv* jvmti, JNIEnv* jni,
     *new_class_data_len = 0;
     *new_class_data = nullptr;
 
-    if (!ctx.started || !ctx.bci_transformer_class || !ctx.bci_transform_method) return;
+    // Acquire pairs with vm_init's release store, which also publishes the
+    // transformer class/method fields read below.
+    if (!ctx.started.load(std::memory_order_acquire) ||
+        !ctx.bci_transformer_class || !ctx.bci_transform_method) return;
     if (t_in_transform) return;  // re-entrant load during transform: leave unchanged
     if (!name) return;
 

@@ -50,6 +50,10 @@ std::string serialize_event(const CapturedEvent& ev) {
     w.field("fingerprint", ev.fingerprint);
     w.field("captureMode", capture_mode_name(ev.mode));
     w.field("hitCount", static_cast<unsigned long long>(ev.hit_count));
+    // Real throws this event represents (>1 only for aggregated COUNT_ONLY
+    // summaries). The collector SUMs this; hitCount stays display-only.
+    w.field("occurrences", static_cast<unsigned long long>(
+        ev.occurrences ? ev.occurrences : 1));
     w.field("deploymentId", ev.deployment_id);
     w.field("environment", ev.environment);
     w.field("instanceId", ev.instance_id);

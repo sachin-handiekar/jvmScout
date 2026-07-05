@@ -6,6 +6,7 @@
 
 #include "async_queue.h"
 #include "config.h"
+#include "count_aggregator.h"
 #include "fingerprint.h"
 #include "ifilter.h"
 #include "itransport.h"
@@ -20,6 +21,7 @@
 #include <functional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #if defined(_WIN32)
 #include <stdlib.h>
@@ -101,6 +103,76 @@ static void test_sampler_lru_bound() {
     CHECK(s.tracked() <= 4);
 }
 
+static void test_sampler_default_bound_and_thread_safety() {
+    // Striped sampler: hammer it from several threads with overlapping
+    // fingerprints; the total tracked set stays within the configured cap and
+    // per-fingerprint totals remain exact.
+    Sampler s;  // default cap (4096), striped
+    const int kThreads = 8, kPerThread = 2000;
+    std::vector<std::thread> ts;
+    for (int t = 0; t < kThreads; ++t) {
+        ts.emplace_back([&s] {
+            for (int i = 0; i < kPerThread; ++i) {
+                s.decide("shared-" + std::to_string(i % 100));
+            }
+        });
+    }
+    for (auto& t : ts) t.join();
+    CHECK(s.tracked() == 100);
+    // 8 threads x 2000 hits over 100 fingerprints = 160 hits each; the next
+    // decide() must report hit 161.
+    CHECK(s.decide("shared-0").hit_count == kThreads * kPerThread / 100 + 1);
+}
+
+// --- COUNT_ONLY aggregation -------------------------------------------------
+
+static CapturedEvent count_proto(const std::string& fp, uint64_t hits) {
+    CapturedEvent ev;
+    ev.fingerprint = fp;
+    ev.mode = CaptureMode::COUNT_ONLY;
+    ev.hit_count = hits;
+    ev.exception_type = "java/lang/IllegalStateException";
+    return ev;
+}
+
+static void test_count_aggregator_folds_occurrences() {
+    CountAggregator agg;
+    for (int i = 1; i <= 5; ++i) agg.record("fp-a", count_proto("fp-a", 100 + i));
+    agg.record("fp-b", count_proto("fp-b", 7));
+    CHECK(agg.pending() == 2);
+
+    std::vector<std::string> out;
+    agg.drain(out, /*force=*/true);
+    CHECK(out.size() == 2);
+    CHECK(agg.pending() == 0);
+
+    std::string a = out[0].find("fp-a") != std::string::npos ? out[0] : out[1];
+    CHECK(a.find("\"occurrences\":5") != std::string::npos);   // 5 folded throws
+    CHECK(a.find("\"hitCount\":105") != std::string::npos);    // freshest counter
+    CHECK(a.find("\"captureMode\":\"COUNT_ONLY\"") != std::string::npos);
+}
+
+static void test_count_aggregator_respects_flush_interval() {
+    CountAggregator agg;
+    agg.record("fp", count_proto("fp", 1));
+    std::vector<std::string> out;
+    agg.drain(out, /*force=*/false);  // interval not elapsed -> nothing leaves
+    CHECK(out.empty());
+    CHECK(agg.pending() == 1);
+    agg.drain(out, /*force=*/true);
+    CHECK(out.size() == 1);
+}
+
+static void test_count_aggregator_bounds_entries() {
+    CountAggregator agg;
+    for (size_t i = 0; i < CountAggregator::kMaxEntries + 50; ++i) {
+        std::string fp = "fp-" + std::to_string(i);
+        agg.record(fp, count_proto(fp, 1));
+    }
+    CHECK(agg.pending() == CountAggregator::kMaxEntries);
+    CHECK(agg.overflow_dropped() == 50);  // overflow counted, not silent
+}
+
 static void test_json_escape() {
     CHECK(JsonWriter::escape("hello") == "hello");
     // quote + newline
@@ -125,6 +197,25 @@ static void test_config_parse() {
     CHECK(cfg.bci == true);
     CHECK(cfg.depth == 5);
     CHECK(cfg.bci_packages.size() == 2);
+}
+
+static void test_config_api_key_file() {
+    const char* path = "agent_test_api_key.tmp";
+    {
+        std::ofstream out(path);
+        out << "  stk_from_file_123 \n" << "second line ignored\n";
+    }
+    AgentConfig cfg = parse_config(("host=h,api_key_file=" + std::string(path)).c_str());
+    CHECK(cfg.api_key == "stk_from_file_123");  // first line, trimmed
+    std::remove(path);
+
+    // Missing file: warn (stderr) but never crash; key stays unset.
+    AgentConfig missing = parse_config("api_key_file=definitely_missing_file.tmp");
+    CHECK(missing.api_key.empty());
+
+    // Inline api_key still works and file wins only when readable.
+    AgentConfig inline_key = parse_config("api_key=inline_k");
+    CHECK(inline_key.api_key == "inline_k");
 }
 
 static void test_yaml_parse() {
@@ -206,21 +297,23 @@ static void test_redact_matches() {
 
 // --- async queue / collector-down behavior --------------------------------
 
-// Controllable in-memory transport. `up` toggles collector availability;
-// `delivered` counts events in successfully-sent batches (each test event is
-// the single token "x", so the count is the number of 'x' bytes in the body).
+// Controllable in-memory transport. `result` selects the outcome of every
+// send; `delivered` counts events in successfully-sent batches (each test
+// event is the single token "x", so the count is the number of 'x' bytes in
+// the body).
 class FakeTransport : public ITransport {
 public:
-    std::atomic<bool> up{true};
+    std::atomic<SendResult> result{SendResult::kOk};
     std::atomic<int> send_calls{0};
     std::atomic<int> delivered{0};
-    bool send(const std::string& body) override {
+    SendResult send(const std::string& body) override {
         send_calls.fetch_add(1, std::memory_order_relaxed);
-        if (!up.load()) return false;
+        SendResult r = result.load();
+        if (r != SendResult::kOk) return r;
         int n = 0;
         for (char c : body) if (c == 'x') ++n;
         delivered.fetch_add(n, std::memory_order_relaxed);
-        return true;
+        return r;
     }
     const char* name() const override { return "fake"; }
 };
@@ -246,7 +339,7 @@ static void test_async_queue_bounded_drops() {
 // the worker retries without dropping anything while under capacity.
 static void test_async_queue_no_drop_during_outage() {
     FakeTransport t;
-    t.up = false;  // collector unreachable
+    t.result = SendResult::kRetryable;  // collector unreachable
     AsyncQueue q(&t, "test");
     q.start();
 
@@ -261,7 +354,7 @@ static void test_async_queue_no_drop_during_outage() {
 
 // Collector up: enqueued events are batched and delivered, none dropped.
 static void test_async_queue_delivers_when_up() {
-    FakeTransport t;  // up by default
+    FakeTransport t;  // kOk by default
     AsyncQueue q(&t, "test");
     q.start();
 
@@ -274,19 +367,65 @@ static void test_async_queue_delivers_when_up() {
     q.stop();
 }
 
+// A definitive 4xx rejection (revoked token, bad endpoint) must not be
+// retried: the batch is dropped immediately and counted.
+static void test_async_queue_permanent_rejection_drops_without_retry() {
+    FakeTransport t;
+    t.result = SendResult::kPermanent;
+    AsyncQueue q(&t, "test");
+    q.start();
+
+    const int N = AsyncQueue::kBatchSize;  // exactly one batch
+    for (int i = 0; i < N; ++i) CHECK(q.enqueue("x"));
+
+    poll_until([&] { return q.dropped() >= static_cast<uint64_t>(N); }, 5000);
+    CHECK(q.dropped() == static_cast<uint64_t>(N));  // dropped, counted
+    CHECK(t.send_calls.load() == 1);                 // exactly one attempt, no retries
+    q.stop();
+}
+
+// stop() with an unreachable collector must return quickly (bounded drain) and
+// account for every undelivered event in dropped() — VM_DEATH runs on the host
+// application's shutdown path and must never hang it.
+static void test_async_queue_shutdown_is_bounded_and_counts_drops() {
+    FakeTransport t;
+    t.result = SendResult::kRetryable;  // collector down
+    AsyncQueue q(&t, "test");
+    q.start();
+
+    const int N = 100;  // several batches
+    for (int i = 0; i < N; ++i) CHECK(q.enqueue("x"));
+    poll_until([&] { return t.send_calls.load() >= 1; }, 3000);
+
+    auto begin = std::chrono::steady_clock::now();
+    q.stop();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - begin)
+                       .count();
+    CHECK(elapsed < AsyncQueue::kShutdownDrainMs + 2000);  // bounded, not per-batch timeouts
+    CHECK(q.dropped() == static_cast<uint64_t>(N));        // losses are visible
+}
+
 int main() {
     test_fingerprint();
     test_filters();
     test_sampler_tiers();
     test_sampler_lru_bound();
+    test_sampler_default_bound_and_thread_safety();
+    test_count_aggregator_folds_occurrences();
+    test_count_aggregator_respects_flush_interval();
+    test_count_aggregator_bounds_entries();
     test_json_escape();
     test_config_parse();
+    test_config_api_key_file();
     test_yaml_parse();
     test_build_config_precedence();
     test_redact_matches();
     test_async_queue_bounded_drops();
     test_async_queue_no_drop_during_outage();
     test_async_queue_delivers_when_up();
+    test_async_queue_permanent_rejection_drops_without_retry();
+    test_async_queue_shutdown_is_bounded_and_counts_drops();
     if (g_fail == 0) std::printf("ALL %s\n", "PASS");
     else std::printf("%d CHECK(S) FAILED\n", g_fail);
     return g_fail ? 1 : 0;

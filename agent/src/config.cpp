@@ -3,6 +3,7 @@
 #include "platform.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -65,6 +66,21 @@ std::string trim(const std::string& s) {
     return s.substr(b, e - b + 1);
 }
 
+// Read an API key from a file (first line, trimmed). Preferred over api_key=
+// on the -agentpath option string, which is visible to every user on the host
+// via the process command line (ps / Task Manager / /proc/*/cmdline).
+std::string read_key_file(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) {
+        std::fprintf(stderr, "[jvmti-agent] api_key_file '%s' could not be read\n",
+                     path.c_str());
+        return "";
+    }
+    std::string line;
+    std::getline(in, line);
+    return trim(line);
+}
+
 // Strip a single layer of matching surrounding quotes (YAML scalars may be quoted).
 std::string unquote(std::string s) {
     if (s.size() >= 2 && (s.front() == '"' || s.front() == '\'') && s.back() == s.front()) {
@@ -88,9 +104,10 @@ std::string getenv_str(const char* name) {
 const std::vector<std::string>& known_keys() {
     static const std::vector<std::string> keys = {
         "host", "port", "path", "deployment", "environment", "console", "depth",
-        "timeout", "https", "tls_insecure", "api_key", "deny", "location_deny",
-        "capture_packages", "bci", "bci_jar", "bci_packages", "bci_exclude",
-        "bci_verbose", "source", "instance_id", "env_capture", "redact_props",
+        "timeout", "https", "tls_insecure", "api_key", "api_key_file", "deny",
+        "location_deny", "capture_packages", "bci", "bci_jar", "bci_packages",
+        "bci_exclude", "bci_verbose", "source", "instance_id", "env_capture",
+        "redact_props",
     };
     return keys;
 }
@@ -110,6 +127,10 @@ void apply_kv(AgentConfig& cfg, const std::string& key, const std::string& val) 
     else if (key == "https") cfg.https = to_bool(val);
     else if (key == "tls_insecure") cfg.tls_insecure = to_bool(val);
     else if (key == "api_key") cfg.api_key = val;
+    else if (key == "api_key_file") {
+        std::string k = read_key_file(val);
+        if (!k.empty()) cfg.api_key = k;
+    }
     else if (key == "deny") { for (auto& p : split(val, ';')) cfg.deny.push_back(p); }
     else if (key == "location_deny") { for (auto& p : split(val, ';')) cfg.location_deny.push_back(p); }
     else if (key == "capture_packages") cfg.capture_packages = split(val, ';');

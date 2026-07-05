@@ -205,7 +205,27 @@ void print_console(const AgentConfig& cfg, const CapturedEvent& ev) {
     std::fflush(stdout);
 }
 
+// Build a Location from cached method metadata (no JVMTI calls).
+Location location_from_cache(const MethodInfo& mi, jlocation loc) {
+    Location l;
+    l.class_name = mi.class_dotted;
+    l.method_name = mi.method_name;
+    l.source_file = mi.source_file;
+    l.line_number = mi.line_at(loc);
+    l.valid = true;
+    return l;
+}
+
 }  // namespace
+
+void flush_pending_counts(AgentContext& ctx, bool force) {
+    if (!ctx.queue) return;
+    std::vector<std::string> summaries;
+    ctx.aggregator.drain(summaries, force);
+    for (auto& s : summaries) {
+        ctx.queue->enqueue(std::move(s));
+    }
+}
 
 void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                 jmethodID method, jlocation location,
@@ -215,7 +235,7 @@ void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
     if (!guard.engaged) return;
 
     AgentContext* ctx = agent_context();
-    if (!ctx || !ctx->started) return;
+    if (!ctx || !ctx->started.load(std::memory_order_acquire)) return;
 
     try {
         JniLocalFrame frame(jni, 128);
@@ -224,30 +244,39 @@ void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
         const std::string ex_type = exception_type_slash(jvmti, jni, exception);
         if (ctx->type_filter && !ctx->type_filter->accept(ex_type)) return;
 
-        // Throw-site class + location filter.
-        jclass decl = nullptr;
-        std::string throw_class_slash;
-        if (jvmti->GetMethodDeclaringClass(method, &decl) == JVMTI_ERROR_NONE) {
-            throw_class_slash = class_signature_slash(jvmti, decl);
-            if (decl) jni->DeleteLocalRef(decl);
-        }
-        if (ctx->location_filter && !ctx->location_filter->accept(throw_class_slash)) {
-            return;
-        }
+        // Throw-site metadata (name/class/source/line table + precomputed
+        // location-filter verdict) comes from the per-jmethodID cache: this
+        // path runs for EVERY throw in the JVM, so it must not repeat JVMTI
+        // string/table lookups per throw.
+        auto mi = ctx->method_cache.lookup(jvmti, jni, method,
+                                           ctx->location_filter.get());
+        if (mi->location_denied) return;
 
-        // Method name + line for fingerprint.
-        std::string method_name;
-        char* mname = nullptr;
-        if (jvmti->GetMethodName(method, &mname, nullptr, nullptr) == JVMTI_ERROR_NONE) {
-            JvmtiString freeName(jvmti, mname);
-            method_name = mname ? mname : "";
-        }
-        int line = resolve_line_number(jvmti, method, location);
-
+        const int line = mi->line_at(location);
         const std::string fp =
-            compute_fingerprint(ex_type, throw_class_slash, method_name, line);
+            compute_fingerprint(ex_type, mi->class_slash, mi->method_name, line);
 
         Sampler::Decision d = ctx->sampler.decide(fp);
+
+        if (d.mode == CaptureMode::COUNT_ONLY) {
+            // Suppressed tier: fold into the per-fingerprint aggregator (one
+            // summary event per flush interval) instead of shipping one event
+            // per throw. Skips getMessage()/thread info/cause chain entirely.
+            CapturedEvent proto;
+            proto.fingerprint = fp;
+            proto.mode = CaptureMode::COUNT_ONLY;
+            proto.hit_count = d.hit_count;
+            proto.timestamp = iso8601_now();
+            proto.deployment_id = ctx->config.deployment;
+            proto.environment = ctx->config.environment;
+            proto.instance_id = ctx->config.instance_id;
+            proto.exception_type = ex_type;
+            proto.caught = (catch_method != nullptr);
+            proto.location = location_from_cache(*mi, location);
+            ctx->aggregator.record(fp, std::move(proto));
+            flush_pending_counts(*ctx, /*force=*/false);
+            return;
+        }
 
         CapturedEvent ev;
         ev.fingerprint = fp;
@@ -260,16 +289,14 @@ void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
         ev.exception_type = ex_type;
         ev.exception_message = call_string_method(jni, exception, "getMessage");
         ev.caught = (catch_method != nullptr);
-        ev.location = location_from_method(jvmti, jni, method, location);
+        ev.location = location_from_cache(*mi, location);
         if (catch_method) {
             ev.caught_at = location_from_method(jvmti, jni, catch_method, catch_location);
         }
         fill_thread_info(jvmti, thread, ev.thread);
 
-        if (d.mode != CaptureMode::COUNT_ONLY) {
-            fill_cause_chain(jvmti, jni, exception, ev.cause_chain);
-            fill_suppressed(jvmti, jni, exception, ev.suppressed);
-        }
+        fill_cause_chain(jvmti, jni, exception, ev.cause_chain);
+        fill_suppressed(jvmti, jni, exception, ev.suppressed);
 
         BciShadow* shadow = nullptr;
         if (ctx->config.bci) {
@@ -284,7 +311,7 @@ void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                ctx->location_filter.get(), shadow,
                                &ctx->config.redact_props);
             ev.stack = walker.walk(jni, thread, /*capture_locals=*/true);
-        } else if (d.mode == CaptureMode::REDUCED) {
+        } else {
             StackWalker walker(jvmti, ctx->inspector.get(),
                                ctx->location_filter.get(), shadow,
                                &ctx->config.redact_props);
@@ -319,6 +346,8 @@ void JNICALL exception_callback(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
         if (ctx->queue) {
             ctx->queue->enqueue(serialize_event(ev));
         }
+        // Piggyback a due aggregator flush on this (already sampled) capture.
+        flush_pending_counts(*ctx, /*force=*/false);
     } catch (const std::exception&) {
         clear_ex(jni);
     } catch (...) {

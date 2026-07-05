@@ -114,7 +114,7 @@ jvmti-agent/
   shims: UUID, library path, env enumeration), `json_utils.h`, `jvmti_utils.h`
   (`JvmtiString`/`JniLocalFrame` RAII, `ResolveLineNumber`).
 - **Config (parsed from `-agentpath:<lib>=key=val,...`):** `host`/`port`/`path`
-  (default `localhost`/`8080`/`/collector`), `deployment`, `console` (true), `depth` (3),
+  (default `localhost`/`8080`/`/collector`), `deployment`, `console` (false), `depth` (3),
   `timeout` (5000ms), `deny` (10 JDK patterns), `capture_packages` (allowlist mode),
   `location_deny` (23 framework patterns), `bci` (false), `bci_jar` (auto-detect next to
   the loaded library — `.dll`/`.so`/`.dylib`), `bci_packages`, `bci_exclude` (14 patterns),

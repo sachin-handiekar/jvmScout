@@ -7,6 +7,11 @@
 
 #include <string>
 
+// Value 4 in the Windows SDK (Win 8.1+). Some toolchains' winhttp.h predate it.
+#ifndef WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
+#define WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY 4
+#endif
+
 namespace {
 
 std::wstring widen(const std::string& s) {
@@ -38,24 +43,26 @@ public:
         }
     }
 
-    bool send(const std::string& body) override {
-        Handle session;
-        session.h = WinHttpOpen(L"jvmti-agent/1.0",
-                                WINHTTP_ACCESS_TYPE_NO_PROXY,
-                                WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-        if (!session.h) return false;
-        WinHttpSetTimeouts(session.h, timeout_, timeout_, timeout_, timeout_);
+    ~WinHttpTransport() override {
+        if (connect_) WinHttpCloseHandle(connect_);
+        if (session_) WinHttpCloseHandle(session_);
+    }
 
-        Handle connect;
-        connect.h = WinHttpConnect(session.h, host_.c_str(), port_, 0);
-        if (!connect.h) return false;
+    SendResult send(const std::string& body) override {
+        // Session + connection persist across sends so batches ride one
+        // keep-alive TCP/TLS connection instead of a fresh handshake per POST.
+        // Only the queue worker thread calls send(), so no locking is needed.
+        if (!ensure_connected()) return SendResult::kRetryable;
 
         Handle request;
         const DWORD request_flags = https_ ? WINHTTP_FLAG_SECURE : 0;
-        request.h = WinHttpOpenRequest(connect.h, L"POST", path_.c_str(), nullptr,
+        request.h = WinHttpOpenRequest(connect_, L"POST", path_.c_str(), nullptr,
                                        WINHTTP_NO_REFERER,
                                        WINHTTP_DEFAULT_ACCEPT_TYPES, request_flags);
-        if (!request.h) return false;
+        if (!request.h) {
+            reset_connection();
+            return SendResult::kRetryable;
+        }
 
         if (https_ && tls_insecure_) {
             // Testing/self-signed only: ignore certificate validation errors.
@@ -70,9 +77,13 @@ public:
                                 const_cast<char*>(body.data()),
                                 static_cast<DWORD>(body.size()),
                                 static_cast<DWORD>(body.size()), 0)) {
-            return false;
+            reset_connection();  // stale keep-alive/socket: rebuild next attempt
+            return SendResult::kRetryable;
         }
-        if (!WinHttpReceiveResponse(request.h, nullptr)) return false;
+        if (!WinHttpReceiveResponse(request.h, nullptr)) {
+            reset_connection();
+            return SendResult::kRetryable;
+        }
 
         DWORD status = 0;
         DWORD len = sizeof(status);
@@ -81,14 +92,45 @@ public:
                 WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                 WINHTTP_HEADER_NAME_BY_INDEX, &status, &len,
                 WINHTTP_NO_HEADER_INDEX)) {
-            return false;
+            return SendResult::kRetryable;
         }
-        return status >= 200 && status < 300;
+        return classify_http_status(static_cast<long>(status));
     }
 
     const char* name() const override { return "winhttp"; }
 
 private:
+    bool ensure_connected() {
+        if (!session_) {
+            // Honor the machine's proxy configuration (WPAD/IE settings):
+            // corporate networks with mandatory egress proxies must still be
+            // able to reach the collector. Falls back to a direct connection
+            // on OSes without automatic-proxy support.
+            session_ = WinHttpOpen(L"jvmti-agent/1.0",
+                                   WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                   WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+            if (!session_) {
+                session_ = WinHttpOpen(L"jvmti-agent/1.0",
+                                       WINHTTP_ACCESS_TYPE_NO_PROXY,
+                                       WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+            }
+            if (!session_) return false;
+            WinHttpSetTimeouts(session_, timeout_, timeout_, timeout_, timeout_);
+        }
+        if (!connect_) {
+            connect_ = WinHttpConnect(session_, host_.c_str(), port_, 0);
+            if (!connect_) return false;
+        }
+        return true;
+    }
+
+    void reset_connection() {
+        if (connect_) {
+            WinHttpCloseHandle(connect_);
+            connect_ = nullptr;
+        }
+    }
+
     std::wstring host_;
     std::wstring path_;
     INTERNET_PORT port_;
@@ -96,6 +138,8 @@ private:
     bool https_;
     bool tls_insecure_;
     std::wstring headers_;
+    HINTERNET session_ = nullptr;
+    HINTERNET connect_ = nullptr;
 };
 
 }  // namespace

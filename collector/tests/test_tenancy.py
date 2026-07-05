@@ -188,3 +188,28 @@ def test_ws_only_receives_own_project_events(client):
         msg = ws.receive_json()
         assert msg["kind"] == "exception"
         assert msg["event"]["fingerprint"] == "a1"  # not the beta event
+
+
+# --- agent_start instance ownership ------------------------------------------
+
+def test_agent_start_cannot_hijack_another_projects_instance(client):
+    from conftest import agent_start_event
+    a_ingest = _mint(client, "alpha", "ingest")
+    b_ingest = _mint(client, "beta", "ingest")
+    a_view = _mint(client, "alpha", "viewer")
+    b_view = _mint(client, "beta", "viewer")
+
+    r = client.post("/collector", json=agent_start_event(instanceId="shared-uuid"),
+                    headers=_hdr(a_ingest)).json()
+    assert r["accepted"] == 1
+
+    # beta re-registers alpha's instance_id -> rejected, alpha's row untouched.
+    evil = agent_start_event(instanceId="shared-uuid",
+                             hostInfo={"name": "evil-host", "os": "?"})
+    r = client.post("/collector", json=evil, headers=_hdr(b_ingest)).json()
+    assert r["failed"] == 1 and r["accepted"] == 0
+
+    a_instances = client.get("/jvm-info", headers=_hdr(a_view)).json()
+    assert len(a_instances) == 1
+    assert a_instances[0]["hostInfo"]["name"] == "host-1"
+    assert client.get("/jvm-info", headers=_hdr(b_view)).json() == []

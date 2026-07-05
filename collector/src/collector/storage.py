@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy import (
-    Boolean, Integer, String, Text, delete, func, or_, select,
+    Boolean, Integer, String, Text, delete, event, func, or_, select, text,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -27,7 +27,12 @@ class ExceptionRow(Base):
     timestamp: Mapped[Optional[str]] = mapped_column(String(32))
     fingerprint: Mapped[str] = mapped_column(String(64), index=True)
     capture_mode: Mapped[Optional[str]] = mapped_column(String(16))
+    # Cumulative lifetime occurrence counter for the fingerprint, as reported by
+    # the agent at capture time ("this was the Nth hit"). Display only.
     hit_count: Mapped[int] = mapped_column(Integer, default=1)
+    # How many real throws this row represents (1 for normal events; >1 for the
+    # agent's aggregated COUNT_ONLY summaries). SUM this for volume/series.
+    occurrences: Mapped[int] = mapped_column(Integer, default=1)
     # Tenant the event belongs to, derived authoritatively from the ingest token
     # (NULL for events ingested with the master key / when auth is disabled).
     project_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
@@ -94,8 +99,32 @@ class ConfigEntityRow(Base):
     json_data: Mapped[str] = mapped_column(Text)
 
 
-_engine = create_async_engine(settings.db_url, future=True)
+# COLLECTOR_DB_POOL=null disables connection pooling (a fresh connection per
+# checkout). Required when sessions are used from multiple event loops — e.g.
+# the test suite drives some operations on ad-hoc loops — because pooled
+# asyncpg connections are bound to the loop that created them and awaiting one
+# from another loop deadlocks. Production (one loop) keeps the default pool.
+import os as _os
+_engine_kwargs: dict = {}
+if _os.environ.get("COLLECTOR_DB_POOL", "").lower() == "null":
+    from sqlalchemy.pool import NullPool
+    _engine_kwargs["poolclass"] = NullPool
+
+_engine = create_async_engine(settings.db_url, future=True, **_engine_kwargs)
 _Session = async_sessionmaker(_engine, expire_on_commit=False, class_=AsyncSession)
+
+if _engine.dialect.name == "sqlite":
+    # WAL lets readers proceed during writes (dashboard queries vs. ingest);
+    # busy_timeout retries briefly instead of surfacing "database is locked";
+    # synchronous=NORMAL is the recommended WAL fsync level (durable to app
+    # crash; the OS-crash window is acceptable for telemetry).
+    @event.listens_for(_engine.sync_engine, "connect")
+    def _sqlite_pragmas(dbapi_conn, _record):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.execute("PRAGMA busy_timeout=5000")
+        cur.close()
 
 
 def _now_iso() -> str:
@@ -122,24 +151,51 @@ def _apply_project(q, project_id: Optional[str], column):
     return q.where(column == project_id)
 
 
+# Hot-path indexes. Issued as explicit IF NOT EXISTS DDL because
+# metadata.create_all() skips tables that already exist, so new indexes (and
+# the occurrences column below) would never reach databases created by older
+# builds. Works on both SQLite and Postgres.
+_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS ix_exceptions_received_at "
+    "ON exceptions (received_at)",
+    "CREATE INDEX IF NOT EXISTS ix_exceptions_project_received "
+    "ON exceptions (project_id, received_at)",
+    "CREATE INDEX IF NOT EXISTS ix_exceptions_fingerprint_received "
+    "ON exceptions (fingerprint, received_at)",
+)
+
+
 async def init_db() -> None:
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # Mini-migration for databases created before the occurrences column, in
+    # its own transaction: on Postgres a failed statement poisons the whole
+    # transaction, which must not take create_all/index DDL down with it.
+    try:
+        async with _engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE exceptions ADD COLUMN occurrences INTEGER"))
+    except Exception:
+        pass  # column already exists
+    async with _engine.begin() as conn:
+        for ddl in _INDEX_DDL:
+            await conn.execute(text(ddl))
 
 
 def session() -> AsyncSession:
     return _Session()
 
 
-async def store_exception(ev: ExceptionEvent, raw: dict[str, Any],
-                          project_id: Optional[str] = None) -> int:
+def _exception_row(ev: ExceptionEvent, raw: dict[str, Any],
+                   project_id: Optional[str]) -> ExceptionRow:
     loc = ev.location
-    row = ExceptionRow(
+    return ExceptionRow(
         received_at=_now_iso(),
         timestamp=ev.timestamp,
         fingerprint=ev.fingerprint,
         capture_mode=ev.capture_mode,
         hit_count=ev.hit_count or 1,
+        occurrences=ev.occurrences or 1,
         project_id=project_id,
         deployment_id=ev.deployment_id,
         environment=ev.environment,
@@ -154,10 +210,34 @@ async def store_exception(ev: ExceptionEvent, raw: dict[str, Any],
         thread_name=ev.thread_info.name if ev.thread_info else None,
         raw_json=json.dumps(raw),
     )
+
+
+async def store_exception(ev: ExceptionEvent, raw: dict[str, Any],
+                          project_id: Optional[str] = None) -> int:
+    ids = await store_exceptions([(ev, raw)], project_id)
+    return ids[0]
+
+
+async def store_exceptions(events: list[tuple[ExceptionEvent, dict[str, Any]]],
+                           project_id: Optional[str] = None) -> list[int]:
+    """Persist a batch of exception events in ONE transaction. Agents deliver
+    batches; committing per event would fsync per event and cap ingest at a few
+    hundred rows/second on SQLite. Also touches the senders' instance rows
+    (received_at = last activity) so long-running JVMs that registered once and
+    kept sending are never evicted as stale."""
+    now = _now_iso()
+    rows = [_exception_row(ev, raw, project_id) for ev, raw in events]
+    instance_ids = {ev.instance_id for ev, _raw in events if ev.instance_id}
     async with session() as s:
-        s.add(row)
+        s.add_all(rows)
+        if instance_ids:
+            from sqlalchemy import update
+            await s.execute(
+                update(JvmInstanceRow)
+                .where(JvmInstanceRow.instance_id.in_(instance_ids))
+                .values(received_at=now))
         await s.commit()
-        return row.id
+        return [row.id for row in rows]
 
 
 async def store_agent_start(ev: AgentStartEvent, raw: dict[str, Any],
@@ -166,12 +246,22 @@ async def store_agent_start(ev: AgentStartEvent, raw: dict[str, Any],
     jvm = ev.jvm_info
     async with session() as s:
         existing = await s.scalar(
-            select(JvmInstanceRow).where(JvmInstanceRow.instance_id == (ev.instance_id or ""))
+            select(JvmInstanceRow).where(
+                JvmInstanceRow.instance_id == (ev.instance_id or ""))
         )
         if existing:
+            # Tenant isolation: instance_id is agent-self-reported (trivially
+            # forgeable), so a scoped token may only refresh a row its own
+            # project registered — anything else would let one tenant
+            # overwrite/steal another tenant's instance record. The master key
+            # may refresh any row but never reassigns its project.
+            if project_id is not None and existing.project_id != project_id:
+                raise PermissionError(
+                    f"instance_id {ev.instance_id!r} is registered to another "
+                    "project; refusing cross-tenant re-registration")
             existing.raw_json = json.dumps(raw)
             existing.timestamp = ev.timestamp
-            existing.project_id = project_id
+            existing.received_at = _now_iso()  # last-seen, drives staleness eviction
         else:
             s.add(JvmInstanceRow(
                 received_at=_now_iso(),
@@ -316,19 +406,45 @@ async def stats(project_id: Optional[str] = None) -> dict:
     }
 
 
+# Aggregation granularity for the chart endpoints: rows are grouped in SQL by a
+# received_at prefix — "YYYY-MM-DDTHH:MM" (len 16, minute) for coarse buckets or
+# "…:SS" (len 19, second) for sub-minute ones — so a chart transfers O(groups)
+# rows instead of O(events). substr() works on both SQLite and Postgres.
+def _group_key(bucket_s: float):
+    gran = 19 if bucket_s < 60.0 else 16
+    return gran, func.substr(ExceptionRow.received_at, 1, gran)
+
+
+def _parse_group_key(key: str, gran: int) -> Optional[float]:
+    fmt = "%Y-%m-%dT%H:%M:%S" if gran == 19 else "%Y-%m-%dT%H:%M"
+    try:
+        return datetime.strptime(key, fmt).replace(tzinfo=timezone.utc).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+# One stored row can represent several real throws (aggregated COUNT_ONLY
+# summaries carry occurrences > 1); NULL means a pre-migration row (= 1).
+_OCC = func.coalesce(ExceptionRow.occurrences, 1)
+
+
 async def timeseries(*, hours: int, buckets: int,
                      environment: Optional[str] = None,
                      project_id: Optional[str] = None) -> dict:
     """Bucket exception counts over the last `hours` into `buckets` slots,
-    split by caught vs uncaught. Buckets by collector receive time."""
+    split by caught vs uncaught. Buckets by collector receive time; counts are
+    aggregated in SQL (see _group_key)."""
     now = datetime.now(timezone.utc)
     start = now - timedelta(hours=hours)
     start_iso = start.strftime("%Y-%m-%dT%H:%M:%SZ")
     start_ts = start.timestamp()
     bucket_s = max(1.0, (hours * 3600.0) / buckets)
 
-    q = select(ExceptionRow.received_at, ExceptionRow.caught).where(
-        ExceptionRow.received_at >= start_iso)
+    gran, key = _group_key(bucket_s)
+    q = (select(key.label("k"), ExceptionRow.caught,
+                func.sum(_OCC).label("n"))
+         .where(ExceptionRow.received_at >= start_iso)
+         .group_by(key, ExceptionRow.caught))
     if environment:
         q = q.where(_env_clause(environment))
     q = _apply_project(q, project_id, ExceptionRow.project_id)
@@ -339,15 +455,13 @@ async def timeseries(*, hours: int, buckets: int,
     ]
     async with session() as s:
         rows = (await s.execute(q)).all()
-    for received_at, caught in rows:
-        try:
-            t = datetime.strptime(received_at, "%Y-%m-%dT%H:%M:%SZ").replace(
-                tzinfo=timezone.utc).timestamp()
-        except (ValueError, TypeError):
+    for k, caught, n in rows:
+        t = _parse_group_key(k, gran)
+        if t is None:
             continue
         idx = int((t - start_ts) / bucket_s)
         idx = 0 if idx < 0 else (buckets - 1 if idx >= buckets else idx)
-        series[idx]["caught" if caught else "uncaught"] += 1
+        series[idx]["caught" if caught else "uncaught"] += int(n or 0)
     return {"hours": hours, "buckets": buckets, "series": series}
 
 
@@ -356,19 +470,24 @@ async def event_series(*, hours: int, buckets: int,
                        project_id: Optional[str] = None) -> dict:
     """Per-fingerprint bucketed occurrence counts over the last `hours`.
 
-    Returns, for every fingerprint seen in the window, its total occurrences
-    (summed `hit_count`) and a per-bucket array. This is the real data behind the
-    dashboard's per-event hit counts, sparklines, and rising/falling trend — no
-    client-side fabrication. Buckets by collector receive time."""
+    Returns, for every fingerprint seen in the window, its total occurrences and
+    a per-bucket array, aggregated in SQL (see _group_key). Occurrence counts
+    SUM the rows' `occurrences` (1 per normal event; >1 for agent-aggregated
+    COUNT_ONLY summaries) — never `hit_count`, which is a *cumulative* lifetime
+    display counter. This is the real data behind the dashboard's per-event hit
+    counts, sparklines, and rising/falling trend — no client-side fabrication.
+    Buckets by collector receive time."""
     now = datetime.now(timezone.utc)
     start = now - timedelta(hours=hours)
     start_iso = start.strftime("%Y-%m-%dT%H:%M:%SZ")
     start_ts = start.timestamp()
     bucket_s = max(1.0, (hours * 3600.0) / buckets)
 
-    q = select(
-        ExceptionRow.received_at, ExceptionRow.fingerprint, ExceptionRow.hit_count,
-    ).where(ExceptionRow.received_at >= start_iso)
+    gran, key = _group_key(bucket_s)
+    q = (select(ExceptionRow.fingerprint, key.label("k"),
+                func.sum(_OCC).label("n"))
+         .where(ExceptionRow.received_at >= start_iso)
+         .group_by(ExceptionRow.fingerprint, key))
     if environment:
         q = q.where(_env_clause(environment))
     q = _apply_project(q, project_id, ExceptionRow.project_id)
@@ -377,13 +496,11 @@ async def event_series(*, hours: int, buckets: int,
         rows = (await s.execute(q)).all()
 
     series: dict[str, dict] = {}
-    for received_at, fingerprint, hit_count in rows:
+    for fingerprint, k, n in rows:
         if not fingerprint:
             continue
-        try:
-            t = datetime.strptime(received_at, "%Y-%m-%dT%H:%M:%SZ").replace(
-                tzinfo=timezone.utc).timestamp()
-        except (ValueError, TypeError):
+        t = _parse_group_key(k, gran)
+        if t is None:
             continue
         idx = int((t - start_ts) / bucket_s)
         idx = 0 if idx < 0 else (buckets - 1 if idx >= buckets else idx)
@@ -391,9 +508,9 @@ async def event_series(*, hours: int, buckets: int,
         if entry is None:
             entry = {"total": 0, "buckets": [0] * buckets}
             series[fingerprint] = entry
-        h = hit_count or 1
-        entry["total"] += h
-        entry["buckets"][idx] += h
+        count = int(n or 0)
+        entry["total"] += count
+        entry["buckets"][idx] += count
 
     return {
         "hours": hours,
@@ -409,11 +526,14 @@ async def count_occurrences(*, minutes: int, deployment_id: Optional[str] = None
                             exception_type: Optional[str] = None,
                             environment: Optional[str] = None,
                             project_id: Optional[str] = None) -> int:
-    """Sum `hit_count` over the last `minutes`, optionally scoped. Used by the
-    alert engine's volume-threshold evaluation."""
+    """Count occurrences over the last `minutes`, optionally scoped. Used by the
+    alert engine's volume-threshold evaluation. Sums the rows' `occurrences`
+    (1 per normal event; >1 for aggregated COUNT_ONLY summaries); the rows'
+    `hit_count` is a cumulative lifetime counter (display only) and must never
+    be summed."""
     start = datetime.now(timezone.utc) - timedelta(minutes=minutes)
     start_iso = start.strftime("%Y-%m-%dT%H:%M:%SZ")
-    q = select(func.coalesce(func.sum(ExceptionRow.hit_count), 0)).where(
+    q = select(func.coalesce(func.sum(_OCC), 0)).where(
         ExceptionRow.received_at >= start_iso)
     if deployment_id:
         q = q.where(ExceptionRow.deployment_id == deployment_id)
@@ -590,11 +710,28 @@ async def delete_config(table: str, entity_id: str, *,
         return True
 
 
-async def purge_old_records() -> int:
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=settings.retention_days)).strftime(
+async def purge_old_records(*, vacuum_threshold: int = 10_000) -> int:
+    """Delete exception rows older than the retention window, evict JVM
+    instances with no activity in twice the window (received_at is refreshed on
+    every re-registration and on every ingested event from that instance), and
+    reclaim SQLite file space when a purge removed enough rows to matter
+    (deletes alone never shrink an SQLite file)."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=settings.retention_days)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    instance_cutoff = (now - timedelta(days=2 * settings.retention_days)).strftime(
         "%Y-%m-%dT%H:%M:%SZ")
     async with session() as s:
         result = await s.execute(
             delete(ExceptionRow).where(ExceptionRow.received_at < cutoff))
+        await s.execute(
+            delete(JvmInstanceRow).where(JvmInstanceRow.received_at < instance_cutoff))
         await s.commit()
-        return result.rowcount or 0
+        purged = result.rowcount or 0
+
+    if purged >= vacuum_threshold and _engine.dialect.name == "sqlite":
+        # VACUUM cannot run inside a transaction; use an autocommit connection.
+        async with _engine.connect() as conn:
+            auto = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await auto.execute(text("VACUUM"))
+    return purged

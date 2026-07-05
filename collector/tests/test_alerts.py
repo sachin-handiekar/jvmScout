@@ -30,11 +30,14 @@ def test_event_series_groups_by_fingerprint(client):
     assert sum(series["b"]["buckets"]) == 1
 
 
-def test_event_series_respects_hit_count(client):
+def test_event_series_counts_rows_not_cumulative_hit_count(client):
+    # hitCount on the wire is the agent's *cumulative* lifetime counter for the
+    # fingerprint, not a per-event delta: one stored event = one occurrence,
+    # regardless of how large its running counter is.
     client.post("/collector", json=exception_event(fingerprint="c", hitCount=5),
                 headers=AUTH)
     res = client.get("/stats/event-series", headers=AUTH).json()
-    assert res["series"]["c"]["total"] == 5
+    assert res["series"]["c"]["total"] == 1
 
 
 def test_event_series_environment_filter(client):
@@ -219,3 +222,47 @@ def test_scope_filters_by_deployment(client, monkeypatch):
         exception_event(fingerprint="scoped", deploymentId="svc-a")))
     assert fired == 0
     assert _FakeClient.posted == []
+
+
+# --- SSRF guard on alert destinations ---------------------------------------
+
+def test_destination_guard_blocks_non_public_addresses(monkeypatch):
+    from collector.config import Settings
+    monkeypatch.setattr(alerts, "settings", Settings())  # allow_private=False
+    from conftest import run_async as _run
+    for url in ("http://127.0.0.1/hook", "http://169.254.169.254/latest",
+                "http://10.1.2.3/x", "http://192.168.1.5/x", "http://[::1]/x"):
+        assert _run(alerts._destination_allowed(url)) is False, url
+
+
+def test_destination_guard_permits_private_when_opted_in(monkeypatch):
+    from collector.config import Settings
+    monkeypatch.setattr(alerts, "settings", Settings(alert_allow_private=True))
+    assert run_async(alerts._destination_allowed("http://10.1.2.3/x")) is True
+
+
+# --- aggregated COUNT_ONLY summaries -----------------------------------------
+
+def test_volume_threshold_sums_occurrences(client, monkeypatch):
+    """One agent-aggregated COUNT_ONLY summary carrying occurrences=10 counts
+    as 10 real throws for volume alerting."""
+    _stub_delivery(monkeypatch)
+    client.post("/collector",
+                json=exception_event(fingerprint="agg", captureMode="COUNT_ONLY",
+                                     occurrences=10),
+                headers=AUTH)
+    _make_rule(client, trigger_type="volume_threshold",
+               config={"destination": "https://hooks.example.com/x",
+                       "threshold": 10, "windowMinutes": 60})
+
+    fired = run_async(alerts.evaluate_event(exception_event(fingerprint="agg")))
+    assert fired == 1
+
+
+def test_event_series_sums_occurrences(client):
+    client.post("/collector",
+                json=exception_event(fingerprint="occ", occurrences=7),
+                headers=AUTH)
+    client.post("/collector", json=exception_event(fingerprint="occ"), headers=AUTH)
+    res = client.get("/stats/event-series", headers=AUTH).json()
+    assert res["series"]["occ"]["total"] == 8

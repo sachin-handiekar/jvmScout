@@ -13,7 +13,8 @@ struct AgentConfig {
     std::string path = "/collector";
     std::string deployment;
     std::string environment;  // e.g. production/staging/development (UI grouping)
-    bool console = true;
+    bool console = false;  // per-event stdout logging; opt-in (console=true) —
+                           // a production agent must not spam the host app's logs
     int depth = 3;            // object-inspection recursion depth
     int timeout_ms = 5000;    // HTTP timeout
 

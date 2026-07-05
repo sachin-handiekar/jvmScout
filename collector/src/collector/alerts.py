@@ -18,14 +18,18 @@ Design notes / honesty boundaries:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 
 from . import storage
+from .config import settings
+from .metrics import metrics
 
 log = logging.getLogger("collector.alerts")
 
@@ -166,6 +170,33 @@ def _build_message(rule: dict, ev: dict, fields: dict, reason: str) -> dict:
     }
 
 
+async def _destination_allowed(url: str) -> bool:
+    """SSRF guard: alert destinations are tenant-admin-controlled, so by default
+    the collector refuses to POST anywhere that doesn't resolve to a public
+    address (no loopback/RFC1918/link-local/metadata endpoints). Operators whose
+    webhook receivers live on an internal network opt out with
+    COLLECTOR_ALERT_ALLOW_PRIVATE=1."""
+    if settings.alert_allow_private:
+        return True
+    host = urlparse(url).hostname
+    if not host:
+        return False
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, None)
+    except OSError:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        # is_global is False for loopback, RFC1918, link-local (incl. the cloud
+        # metadata range), CGNAT, and reserved space.
+        if not ip.is_global:
+            return False
+    return True
+
+
 async def _deliver(rule: dict, payload: dict) -> bool:
     """Attempt delivery. Returns True only if the notification was actually sent."""
     channel = rule.get("channel")
@@ -180,6 +211,11 @@ async def _deliver(rule: dict, payload: dict) -> bool:
     if not destination.startswith(("http://", "https://")):
         log.warning("alert rule %s: %s destination %r is not an http(s) URL",
                     rule.get("id"), channel, destination)
+        return False
+    if not await _destination_allowed(destination):
+        log.warning("alert rule %s: destination %r resolves to a non-public "
+                    "address; delivery blocked (set COLLECTOR_ALERT_ALLOW_PRIVATE=1 "
+                    "to allow internal webhooks)", rule.get("id"), destination)
         return False
 
     try:
@@ -236,6 +272,7 @@ async def _evaluate_rule(rule: dict, ev: dict, fields: dict,
         project_id=project_id)
     rule["last_triggered_at"] = fired_at  # keep the cached copy consistent
     rule_cache.reset()  # reflect the new last_triggered_at on next read
+    metrics.alerts_fired += 1
     log.info("alert rule %s fired: %s", rule.get("id"), reason)
     return True
 
@@ -264,12 +301,72 @@ async def evaluate_event(ev: dict, project_id: Optional[str] = None) -> int:
     return fired
 
 
+# --- bounded evaluation worker ----------------------------------------------
+# Evaluations run on ONE consumer task fed by a bounded queue, instead of one
+# fire-and-forget task per ingested event: an exception storm must not fan out
+# into thousands of concurrent DB-scanning tasks on the ingest event loop.
+# When the queue is full, evaluations are skipped (counted + logged sparsely) —
+# losing an alert check under storm load is preferable to sinking ingest.
+
+_QUEUE_MAX = 1000
+
+_queue: Optional[asyncio.Queue] = None
+_worker: Optional[asyncio.Task] = None
+_skipped = 0
+
+
+def start_worker() -> None:
+    """Start the evaluation consumer on the current event loop (lifespan)."""
+    global _queue, _worker
+    if _worker is not None and not _worker.done():
+        return
+    _queue = asyncio.Queue(maxsize=_QUEUE_MAX)
+    _worker = asyncio.get_running_loop().create_task(_consume())
+
+
+async def stop_worker() -> None:
+    global _queue, _worker
+    if _worker is not None:
+        _worker.cancel()
+        try:
+            await _worker
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.warning("alert worker exited abnormally", exc_info=True)
+    _worker = None
+    _queue = None
+
+
+async def _consume() -> None:
+    assert _queue is not None
+    while True:
+        ev, project_id = await _queue.get()
+        try:
+            await evaluate_event(ev, project_id)
+        except Exception:
+            log.warning("alert evaluation crashed", exc_info=True)
+        finally:
+            _queue.task_done()
+
+
 def schedule_evaluation(ev: dict, project_id: Optional[str] = None) -> None:
-    """Fire-and-forget evaluation so ingest latency is unaffected."""
+    """Queue an evaluation off the ingest path so ingest latency is unaffected."""
+    global _skipped
+    if _queue is not None:
+        try:
+            _queue.put_nowait((ev, project_id))
+        except asyncio.QueueFull:
+            _skipped += 1
+            metrics.alerts_skipped += 1
+            if _skipped == 1 or _skipped % 1000 == 0:
+                log.warning("alert queue full; %d evaluations skipped so far",
+                            _skipped)
+        return
+    # Worker not started (bare unit-test contexts): fall back to a task.
     try:
         asyncio.get_running_loop().create_task(_run_safely(ev, project_id))
     except RuntimeError:
-        # No running loop (shouldn't happen under the ASGI server) — skip.
         log.debug("no running loop; skipping alert evaluation")
 
 

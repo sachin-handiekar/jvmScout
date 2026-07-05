@@ -71,6 +71,10 @@ class ExceptionEvent(_Wire):
     fingerprint: str = ""
     capture_mode: Optional[str] = None
     hit_count: int = 1
+    # How many real throws this event represents. Normally 1; the agent's
+    # COUNT_ONLY aggregation emits one summary event carrying the window's
+    # accumulated count. Aggregations must SUM this, never hit_count.
+    occurrences: int = 1
     deployment_id: Optional[str] = None
     environment: Optional[str] = None
     instance_id: Optional[str] = None
@@ -90,6 +94,11 @@ class ExceptionEvent(_Wire):
     def _coerce_fingerprint(cls, v: Any) -> str:
         # fingerprint may arrive as int or string; store as string.
         return "" if v is None else str(v)
+
+    @field_validator("occurrences")
+    @classmethod
+    def _positive_occurrences(cls, v: int) -> int:
+        return v if v >= 1 else 1
 
 
 class JvmInfo(_Wire):

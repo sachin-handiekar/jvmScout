@@ -35,11 +35,15 @@ public final class __JvmtiShadow {
     public static void enterMethod() {
         try {
             int[] d = DEPTH.get();
-            if (d[0] < MAX_DEPTH - 1) {
-                d[0]++;
-                Arrays.fill(FRAMES.get()[d[0]], null);
-                Arrays.fill(NAMES.get()[d[0]], null);
-                Arrays.fill(SLOT_TYPES.get()[d[0]], 0);
+            // Always count the entry, even past MAX_DEPTH (no storage there),
+            // so the unconditional decrement in exitMethod stays balanced and
+            // the counter can't drift on very deep instrumented stacks.
+            d[0]++;
+            int cur = d[0];
+            if (cur >= 0 && cur < MAX_DEPTH) {
+                Arrays.fill(FRAMES.get()[cur], null);
+                Arrays.fill(NAMES.get()[cur], null);
+                Arrays.fill(SLOT_TYPES.get()[cur], 0);
             }
         } catch (Throwable ignored) {}
     }
@@ -47,7 +51,18 @@ public final class __JvmtiShadow {
     public static void exitMethod() {
         try {
             int[] d = DEPTH.get();
-            if (d[0] >= 0) d[0]--;
+            int cur = d[0];
+            if (cur >= 0) {
+                if (cur < MAX_DEPTH) {
+                    // Release captured references eagerly: a pool thread that
+                    // parks after this call must not pin the request's object
+                    // graph until it happens to reuse this depth slot.
+                    Arrays.fill(FRAMES.get()[cur], null);
+                    Arrays.fill(NAMES.get()[cur], null);
+                    Arrays.fill(SLOT_TYPES.get()[cur], 0);
+                }
+                d[0]--;
+            }
         } catch (Throwable ignored) {}
     }
 
