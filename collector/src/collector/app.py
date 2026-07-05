@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse, Response
 
-from . import storage
+from . import alerts, storage
 from .api.routes import public_router, router
 from .config import settings
 
@@ -128,6 +128,7 @@ async def lifespan(app: FastAPI):
     if purged:
         log.info("purged %d records older than retention", purged)
 
+    alerts.start_worker()
     task: asyncio.Task | None = None
     if settings.purge_interval_seconds > 0:
         task = asyncio.create_task(_periodic_purge())
@@ -136,6 +137,7 @@ async def lifespan(app: FastAPI):
     finally:
         if task is not None:
             task.cancel()
+        await alerts.stop_worker()
 
 
 def create_app() -> FastAPI:

@@ -44,10 +44,13 @@ def hash_token(raw: str) -> str:
 class Principal:
     """The authenticated caller. ``is_master`` is the superadmin (master key):
     it sees every project (``project_id`` filter is None) and passes every role
-    gate. A scoped token carries its own ``project_id`` and ``role``."""
+    gate. A scoped token carries its own ``project_id`` and ``role``.
+    ``token_id`` is a non-secret token identifier (the stored prefix) used for
+    per-token rate limiting and log attribution."""
     project_id: Optional[str]
     role: str
     is_master: bool = False
+    token_id: Optional[str] = None
 
     @property
     def scope(self) -> Optional[str]:
@@ -73,15 +76,16 @@ OPEN_PRINCIPAL = Principal(project_id=None, role=DEFAULT_ROLE, is_master=True)
 
 class TokenStore:
     """Short-TTL cache mapping active (non-revoked) API-token hashes to their
-    ``(project_id, role)``, sourced from the UI-managed `api_tokens` config rows.
-    Lets per-token auth + scoping work without a DB hit on every request."""
+    ``(project_id, role, token_prefix)``, sourced from the UI-managed
+    `api_tokens` config rows. Lets per-token auth + scoping work without a DB
+    hit on every request."""
 
     def __init__(self, ttl_s: float = 10.0) -> None:
         self._ttl = ttl_s
         self._at = 0.0
-        self._by_hash: dict[str, tuple[str, str]] = {}
+        self._by_hash: dict[str, tuple[str, str, Optional[str]]] = {}
 
-    async def active(self) -> dict[str, tuple[str, str]]:
+    async def active(self) -> dict[str, tuple[str, str, Optional[str]]]:
         now = time.monotonic()
         if now - self._at > self._ttl:
             # Auth must resolve any token before we know its project, so read
@@ -91,6 +95,7 @@ class TokenStore:
                 r["token_hash"]: (
                     r.get("project_id") or DEFAULT_PROJECT,
                     r.get("role") if r.get("role") in VALID_ROLES else DEFAULT_ROLE,
+                    r.get("token_prefix"),
                 )
                 for r in rows
                 if r.get("token_hash") and not r.get("revoked_at")
@@ -112,11 +117,12 @@ async def resolve_principal(provided: Optional[str]) -> Optional[Principal]:
     if not provided:
         return None
     if _token_matches(provided):
-        return Principal(project_id=None, role=DEFAULT_ROLE, is_master=True)
+        return Principal(project_id=None, role=DEFAULT_ROLE, is_master=True,
+                         token_id="master")
     candidate = hash_token(provided)
-    for h, (project_id, role) in (await token_store.active()).items():
+    for h, (project_id, role, prefix) in (await token_store.active()).items():
         if hmac.compare_digest(candidate, h):
-            return Principal(project_id=project_id, role=role)
+            return Principal(project_id=project_id, role=role, token_id=prefix)
     return None
 
 
@@ -208,14 +214,18 @@ async def authorize_websocket(ws: WebSocket) -> Optional[Principal]:
 class RateLimiter:
     """Fixed-window-ish per-client limiter using a sliding 60s deque of hits."""
 
+    _PRUNE_INTERVAL_S = 60.0
+
     def __init__(self, per_minute: int) -> None:
         self.per_minute = per_minute
         self._hits: dict[str, deque[float]] = {}
+        self._last_prune = time.monotonic()
 
     def allow(self, client: str) -> bool:
         if self.per_minute <= 0:
             return True
         now = time.monotonic()
+        self._maybe_prune(now)
         window = self._hits.setdefault(client, deque())
         cutoff = now - 60.0
         while window and window[0] < cutoff:
@@ -225,9 +235,30 @@ class RateLimiter:
         window.append(now)
         return True
 
+    def _maybe_prune(self, now: float) -> None:
+        """Drop keys whose window has fully expired, so churn in client keys
+        (rotating tokens, many source IPs) can't grow the dict without bound."""
+        if now - self._last_prune < self._PRUNE_INTERVAL_S:
+            return
+        cutoff = now - 60.0
+        stale = [k for k, w in self._hits.items() if not w or w[-1] < cutoff]
+        for k in stale:
+            del self._hits[k]
+        self._last_prune = now
+
 
 rate_limiter = RateLimiter(settings.rate_limit_per_min)
 
 
 def client_key(request: Request) -> str:
     return request.client.host if request.client else "unknown"
+
+
+def rate_key(request: Request, principal: Principal) -> str:
+    """Rate-limit bucket for an authenticated request. Keyed by token, not by
+    peer IP: behind a load balancer every agent shares one source IP (mutual
+    starvation), while one token maps to one workload. Falls back to the peer
+    IP when auth is disabled."""
+    if principal.token_id:
+        return f"token:{principal.token_id}"
+    return client_key(request)

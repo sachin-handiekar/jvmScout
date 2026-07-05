@@ -15,6 +15,9 @@ os.close(_DB_FD)
 os.environ["COLLECTOR_DB_URL"] = f"sqlite+aiosqlite:///{_DB_PATH}"
 os.environ["COLLECTOR_API_KEY"] = "test-key"
 os.environ.setdefault("COLLECTOR_PURGE_INTERVAL_SECONDS", "0")  # no background task in tests
+# Alert tests stub httpx and use fake hostnames; skip the SSRF DNS check here
+# (the guard itself is unit-tested with a patched settings object).
+os.environ.setdefault("COLLECTOR_ALERT_ALLOW_PRIVATE", "1")
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

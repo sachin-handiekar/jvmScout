@@ -22,6 +22,10 @@ class Settings:
     max_body_bytes: int = 5 * 1024 * 1024  # 5 MiB
     rate_limit_per_min: int = 0  # 0 disables rate limiting
     purge_interval_seconds: int = 3600  # 0 disables periodic purge
+    # Allow alert webhooks to target private/internal addresses. Off by default:
+    # in multi-tenant mode a project admin controls the destination URL, and the
+    # collector must not be usable as an SSRF proxy into its own network.
+    alert_allow_private: bool = False
 
     @property
     def auth_enabled(self) -> bool:
@@ -39,6 +43,8 @@ class Settings:
             max_body_bytes=int(os.environ.get("COLLECTOR_MAX_BODY_BYTES", str(5 * 1024 * 1024))),
             rate_limit_per_min=int(os.environ.get("COLLECTOR_RATE_LIMIT_PER_MIN", "0")),
             purge_interval_seconds=int(os.environ.get("COLLECTOR_PURGE_INTERVAL_SECONDS", "3600")),
+            alert_allow_private=os.environ.get(
+                "COLLECTOR_ALERT_ALLOW_PRIVATE", "").lower() in ("1", "true", "yes"),
         )
 
 

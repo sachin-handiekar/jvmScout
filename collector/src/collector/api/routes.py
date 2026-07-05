@@ -16,7 +16,7 @@ from .. import alerts, redaction, storage
 from ..config import settings
 from ..models import AgentStartEvent, ExceptionEvent
 from ..security import (
-    Principal, authorize_websocket, client_key, hash_token, rate_limiter,
+    Principal, authorize_websocket, hash_token, rate_key, rate_limiter,
     require_admin, require_auth, require_ingest, require_read, token_store,
     DEFAULT_PROJECT, VALID_ROLES, ROLE_INGEST,
 )
@@ -35,6 +35,11 @@ class ConnectionManager:
     project so a dashboard only receives its own tenant's events (the master /
     superadmin sees every project)."""
 
+    # One stalled dashboard (full TCP window) must not delay everyone else or
+    # back-pressure ingest: sends run concurrently and a client that can't
+    # accept a frame within this budget is disconnected.
+    SEND_TIMEOUT_S = 2.0
+
     def __init__(self) -> None:
         self._clients: dict[WebSocket, Principal] = {}
         self._lock = asyncio.Lock()
@@ -48,17 +53,25 @@ class ConnectionManager:
         async with self._lock:
             self._clients.pop(ws, None)
 
+    async def _send_one(self, ws: WebSocket, message: dict[str, Any]) -> None:
+        try:
+            await asyncio.wait_for(ws.send_json(message), self.SEND_TIMEOUT_S)
+        except Exception:
+            await self.disconnect(ws)
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
     async def broadcast(self, message: dict[str, Any],
                         project_id: Optional[str] = None) -> None:
         async with self._lock:
-            targets = list(self._clients.items())
-        for ws, principal in targets:
-            if not (principal.is_master or principal.project_id == project_id):
-                continue
-            try:
-                await ws.send_json(message)
-            except Exception:
-                await self.disconnect(ws)
+            targets = [
+                ws for ws, principal in self._clients.items()
+                if principal.is_master or principal.project_id == project_id
+            ]
+        if targets:
+            await asyncio.gather(*(self._send_one(ws, message) for ws in targets))
 
 
 manager = ConnectionManager()
@@ -119,7 +132,7 @@ async def _read_json_body(request: Request) -> Any:
 @router.post("/collector")
 async def ingest(request: Request,
                  principal: Principal = Depends(require_ingest)) -> dict:
-    if not rate_limiter.allow(client_key(request)):
+    if not rate_limiter.allow(rate_key(request, principal)):
         raise HTTPException(status_code=429, detail="rate limit exceeded")
 
     # The event's tenant is taken authoritatively from the token, not from
@@ -131,6 +144,9 @@ async def ingest(request: Request,
     rules = await redaction_cache.get(project_id)
     accepted = 0
     failed = 0
+    # Validate/redact everything first, then persist the exceptions in ONE
+    # transaction (agents send batches; a commit per event fsyncs per event).
+    batch: list[tuple[ExceptionEvent, dict]] = []
     for raw in items:
         if not isinstance(raw, dict):
             failed += 1
@@ -140,19 +156,28 @@ async def ingest(request: Request,
                 ev = AgentStartEvent.model_validate(raw)
                 await storage.store_agent_start(ev, raw, project_id)
                 await manager.broadcast({"kind": "agent_start", "event": raw}, project_id)
+                accepted += 1
             else:
                 # Redact captured values before parsing/storing/broadcasting.
                 raw = redaction.redact_event(raw, rules)
-                ev = ExceptionEvent.model_validate(raw)
-                row_id = await storage.store_exception(ev, raw, project_id)
+                batch.append((ExceptionEvent.model_validate(raw), raw))
+        except Exception:
+            failed += 1
+            log.warning("dropping malformed event", exc_info=True)
+
+    if batch:
+        try:
+            row_ids = await storage.store_exceptions(batch, project_id)
+        except Exception:
+            failed += len(batch)
+            log.warning("failed to store exception batch", exc_info=True)
+        else:
+            accepted += len(batch)
+            for row_id, (_ev, raw) in zip(row_ids, batch):
                 await manager.broadcast(
                     {"kind": "exception", "id": row_id, "event": raw}, project_id)
                 # Evaluate alert rules off the ingest path (never blocks/breaks it).
                 alerts.schedule_evaluation(raw, project_id)
-            accepted += 1
-        except Exception:
-            failed += 1
-            log.warning("dropping malformed event", exc_info=True)
     return {"accepted": accepted, "failed": failed}
 
 
