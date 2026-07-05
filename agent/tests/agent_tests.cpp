@@ -108,10 +108,12 @@ static void test_sampler_default_bound_and_thread_safety() {
     // fingerprints; the total tracked set stays within the configured cap and
     // per-fingerprint totals remain exact.
     Sampler s;  // default cap (4096), striped
-    const int kThreads = 8, kPerThread = 2000;
+    constexpr int kThreads = 8, kPerThread = 2000;
     std::vector<std::thread> ts;
     for (int t = 0; t < kThreads; ++t) {
-        ts.emplace_back([&s] {
+        // Default reference capture: MSVC (unlike GCC/Clang) refuses implicit
+        // use of non-static constants inside an explicit capture list.
+        ts.emplace_back([&] {
             for (int i = 0; i < kPerThread; ++i) {
                 s.decide("shared-" + std::to_string(i % 100));
             }
