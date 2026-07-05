@@ -16,9 +16,11 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <thread>
+#include <vector>
 
 static int g_fail = 0;
 
@@ -186,6 +188,25 @@ static void test_config_parse() {
     CHECK(cfg.bci_packages.size() == 2);
 }
 
+static void test_config_api_key_file() {
+    const char* path = "agent_test_api_key.tmp";
+    {
+        std::ofstream out(path);
+        out << "  stk_from_file_123 \n" << "second line ignored\n";
+    }
+    AgentConfig cfg = parse_config(("host=h,api_key_file=" + std::string(path)).c_str());
+    CHECK(cfg.api_key == "stk_from_file_123");  // first line, trimmed
+    std::remove(path);
+
+    // Missing file: warn (stderr) but never crash; key stays unset.
+    AgentConfig missing = parse_config("api_key_file=definitely_missing_file.tmp");
+    CHECK(missing.api_key.empty());
+
+    // Inline api_key still works and file wins only when readable.
+    AgentConfig inline_key = parse_config("api_key=inline_k");
+    CHECK(inline_key.api_key == "inline_k");
+}
+
 static void test_redact_matches() {
     std::vector<std::string> pats = {"password", "secret", "token"};
     CHECK(redact_matches(pats, "userPassword") == true);   // case-insensitive substring
@@ -316,6 +337,7 @@ int main() {
     test_count_aggregator_bounds_entries();
     test_json_escape();
     test_config_parse();
+    test_config_api_key_file();
     test_redact_matches();
     test_async_queue_bounded_drops();
     test_async_queue_no_drop_during_outage();

@@ -10,9 +10,10 @@ import os
 import tempfile
 
 # A throwaway on-disk SQLite DB and a known API key for the whole test session.
+# setdefault so CI can point the suite at Postgres via COLLECTOR_DB_URL.
 _DB_FD, _DB_PATH = tempfile.mkstemp(suffix=".db")
 os.close(_DB_FD)
-os.environ["COLLECTOR_DB_URL"] = f"sqlite+aiosqlite:///{_DB_PATH}"
+os.environ.setdefault("COLLECTOR_DB_URL", f"sqlite+aiosqlite:///{_DB_PATH}")
 os.environ["COLLECTOR_API_KEY"] = "test-key"
 os.environ.setdefault("COLLECTOR_PURGE_INTERVAL_SECONDS", "0")  # no background task in tests
 # Alert tests stub httpx and use fake hostnames; skip the SSRF DNS check here

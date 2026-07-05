@@ -85,7 +85,18 @@ class ConfigEntityRow(Base):
     json_data: Mapped[str] = mapped_column(Text)
 
 
-_engine = create_async_engine(settings.db_url, future=True)
+# COLLECTOR_DB_POOL=null disables connection pooling (a fresh connection per
+# checkout). Required when sessions are used from multiple event loops — e.g.
+# the test suite drives some operations on ad-hoc loops — because pooled
+# asyncpg connections are bound to the loop that created them and awaiting one
+# from another loop deadlocks. Production (one loop) keeps the default pool.
+import os as _os
+_engine_kwargs: dict = {}
+if _os.environ.get("COLLECTOR_DB_POOL", "").lower() == "null":
+    from sqlalchemy.pool import NullPool
+    _engine_kwargs["poolclass"] = NullPool
+
+_engine = create_async_engine(settings.db_url, future=True, **_engine_kwargs)
 _Session = async_sessionmaker(_engine, expire_on_commit=False, class_=AsyncSession)
 
 if _engine.dialect.name == "sqlite":
@@ -197,10 +208,20 @@ async def store_exceptions(events: list[tuple[ExceptionEvent, dict[str, Any]]],
                            project_id: Optional[str] = None) -> list[int]:
     """Persist a batch of exception events in ONE transaction. Agents deliver
     batches; committing per event would fsync per event and cap ingest at a few
-    hundred rows/second on SQLite."""
+    hundred rows/second on SQLite. Also touches the senders' instance rows
+    (received_at = last activity) so long-running JVMs that registered once and
+    kept sending are never evicted as stale."""
+    now = _now_iso()
     rows = [_exception_row(ev, raw, project_id) for ev, raw in events]
+    instance_ids = {ev.instance_id for ev, _raw in events if ev.instance_id}
     async with session() as s:
         s.add_all(rows)
+        if instance_ids:
+            from sqlalchemy import update
+            await s.execute(
+                update(JvmInstanceRow)
+                .where(JvmInstanceRow.instance_id.in_(instance_ids))
+                .values(received_at=now))
         await s.commit()
         return [row.id for row in rows]
 
@@ -226,6 +247,7 @@ async def store_agent_start(ev: AgentStartEvent, raw: dict[str, Any],
                     "project; refusing cross-tenant re-registration")
             existing.raw_json = json.dumps(raw)
             existing.timestamp = ev.timestamp
+            existing.received_at = _now_iso()  # last-seen, drives staleness eviction
         else:
             s.add(JvmInstanceRow(
                 received_at=_now_iso(),
@@ -624,11 +646,28 @@ async def delete_config(table: str, entity_id: str, *,
         return True
 
 
-async def purge_old_records() -> int:
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=settings.retention_days)).strftime(
+async def purge_old_records(*, vacuum_threshold: int = 10_000) -> int:
+    """Delete exception rows older than the retention window, evict JVM
+    instances with no activity in twice the window (received_at is refreshed on
+    every re-registration and on every ingested event from that instance), and
+    reclaim SQLite file space when a purge removed enough rows to matter
+    (deletes alone never shrink an SQLite file)."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=settings.retention_days)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    instance_cutoff = (now - timedelta(days=2 * settings.retention_days)).strftime(
         "%Y-%m-%dT%H:%M:%SZ")
     async with session() as s:
         result = await s.execute(
             delete(ExceptionRow).where(ExceptionRow.received_at < cutoff))
+        await s.execute(
+            delete(JvmInstanceRow).where(JvmInstanceRow.received_at < instance_cutoff))
         await s.commit()
-        return result.rowcount or 0
+        purged = result.rowcount or 0
+
+    if purged >= vacuum_threshold and _engine.dialect.name == "sqlite":
+        # VACUUM cannot run inside a transaction; use an autocommit connection.
+        async with _engine.connect() as conn:
+            auto = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await auto.execute(text("VACUUM"))
+    return purged

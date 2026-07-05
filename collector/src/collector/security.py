@@ -15,7 +15,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
-from fastapi import Depends, Header, HTTPException, Query, Request, WebSocket, status
+from fastapi import Depends, Header, HTTPException, Request, WebSocket, status
 
 from . import storage
 from .config import settings
@@ -28,6 +28,11 @@ ROLE_INGEST = "ingest"
 ROLE_VIEWER = "viewer"
 ROLE_ADMIN = "admin"
 VALID_ROLES = frozenset({ROLE_INGEST, ROLE_VIEWER, ROLE_ADMIN})
+
+# Stored-token role granting superadmin (all projects). Cannot be minted via
+# the API (POST /tokens validates against VALID_ROLES); only the first-start
+# bootstrap writes it.
+ROLE_MASTER = "master"
 
 # Default applied to a token issued without an explicit project/role (and to the
 # legacy single-key flow), so existing setups keep full access.
@@ -94,7 +99,8 @@ class TokenStore:
             self._by_hash = {
                 r["token_hash"]: (
                     r.get("project_id") or DEFAULT_PROJECT,
-                    r.get("role") if r.get("role") in VALID_ROLES else DEFAULT_ROLE,
+                    r.get("role") if r.get("role") in (VALID_ROLES | {ROLE_MASTER})
+                    else DEFAULT_ROLE,
                     r.get("token_prefix"),
                 )
                 for r in rows
@@ -122,6 +128,9 @@ async def resolve_principal(provided: Optional[str]) -> Optional[Principal]:
     candidate = hash_token(provided)
     for h, (project_id, role, prefix) in (await token_store.active()).items():
         if hmac.compare_digest(candidate, h):
+            if role == ROLE_MASTER:
+                return Principal(project_id=None, role=DEFAULT_ROLE,
+                                 is_master=True, token_id=prefix)
             return Principal(project_id=project_id, role=role, token_id=prefix)
     return None
 
@@ -153,18 +162,20 @@ def _extract_token(
 async def require_auth(
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
-    key: Optional[str] = Query(default=None),
 ) -> Principal:
     """FastAPI dependency: reject requests lacking a valid API key and return the
     resolved Principal (so endpoints can scope by project/role).
 
-    Accepts the key via ``Authorization: Bearer <key>``, ``X-API-Key``, or a
-    ``?key=`` query parameter (the last lets the static dashboard pass it). When
-    auth is disabled the open superadmin principal is used.
+    Accepts the key via ``Authorization: Bearer <key>`` or ``X-API-Key`` only.
+    A ``?key=`` query parameter is deliberately NOT accepted on HTTP endpoints —
+    query strings land in access logs, proxies, and browser history. (The
+    WebSocket handshake still allows it because browsers can't set headers
+    there; see authorize_websocket.) When auth is disabled the open superadmin
+    principal is used.
     """
     if not settings.auth_enabled:
         return OPEN_PRINCIPAL
-    token = _extract_token(authorization, x_api_key, key)
+    token = _extract_token(authorization, x_api_key, None)
     principal = await resolve_principal(token)
     if principal is None:
         raise HTTPException(
@@ -252,6 +263,30 @@ rate_limiter = RateLimiter(settings.rate_limit_per_min)
 
 def client_key(request: Request) -> str:
     return request.client.host if request.client else "unknown"
+
+
+async def ensure_bootstrap_admin_token() -> Optional[str]:
+    """First-start bootstrap: when no COLLECTOR_API_KEY is configured and the
+    token store is empty, mint a master token (stored hashed, like any token)
+    and return the raw value so the caller can print it ONCE. Returns None when
+    tokens already exist (nothing to bootstrap). This is what keeps the
+    collector authenticated by default without requiring the operator to invent
+    a key before first boot."""
+    import secrets
+
+    rows = await storage.list_config("api_tokens", all_projects=True)
+    if rows:
+        return None
+    raw = "stk_" + secrets.token_hex(24)
+    await storage.insert_config("api_tokens", {
+        "name": "bootstrap-master",
+        "token_prefix": raw[:10],
+        "token_hash": hash_token(raw),
+        "role": ROLE_MASTER,
+        "revoked_at": None,
+    }, project_id=None)
+    token_store.reset()
+    return raw
 
 
 def rate_key(request: Request, principal: Principal) -> str:

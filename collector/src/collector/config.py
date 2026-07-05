@@ -18,6 +18,11 @@ class Settings:
 
     # Security / limits.
     api_key: str = ""
+    # Explicitly run the collector unauthenticated. When False (default) and no
+    # COLLECTOR_API_KEY is set, a master token is bootstrapped into the token
+    # store on first start and printed once - the collector never silently runs
+    # open, because captured events can contain secrets/PII.
+    allow_anonymous: bool = False
     cors_origins: tuple[str, ...] = field(default_factory=tuple)
     max_body_bytes: int = 5 * 1024 * 1024  # 5 MiB
     rate_limit_per_min: int = 0  # 0 disables rate limiting
@@ -29,7 +34,7 @@ class Settings:
 
     @property
     def auth_enabled(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.api_key) or not self.allow_anonymous
 
     @staticmethod
     def from_env() -> "Settings":
@@ -39,6 +44,8 @@ class Settings:
             db_url=os.environ.get("COLLECTOR_DB_URL", "sqlite+aiosqlite:///./collector.db"),
             retention_days=int(os.environ.get("COLLECTOR_RETENTION_DAYS", "30")),
             api_key=os.environ.get("COLLECTOR_API_KEY", ""),
+            allow_anonymous=os.environ.get(
+                "COLLECTOR_ALLOW_ANONYMOUS", "").lower() in ("1", "true", "yes"),
             cors_origins=_split_csv(os.environ.get("COLLECTOR_CORS_ORIGINS", "")),
             max_body_bytes=int(os.environ.get("COLLECTOR_MAX_BODY_BYTES", str(5 * 1024 * 1024))),
             rate_limit_per_min=int(os.environ.get("COLLECTOR_RATE_LIMIT_PER_MIN", "0")),

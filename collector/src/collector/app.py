@@ -120,10 +120,24 @@ async def lifespan(app: FastAPI):
     )
     if not settings.auth_enabled:
         log.warning(
-            "COLLECTOR_API_KEY is not set - all endpoints are UNAUTHENTICATED. "
-            "Set COLLECTOR_API_KEY before exposing the collector beyond localhost."
+            "COLLECTOR_ALLOW_ANONYMOUS is set - all endpoints are "
+            "UNAUTHENTICATED. Only safe on a trusted local network."
         )
     await storage.init_db()
+    if not settings.api_key and not settings.allow_anonymous:
+        # Auth is on but no master key is configured: bootstrap a master token
+        # on first start so the collector never silently runs open.
+        from .security import ensure_bootstrap_admin_token
+        raw = await ensure_bootstrap_admin_token()
+        if raw is not None:
+            log.warning(
+                "No COLLECTOR_API_KEY set and no tokens exist - generated a "
+                "master token (shown ONCE, store it now):\n\n"
+                "    %s\n\n"
+                "Use it as the dashboard/API key and to mint scoped tokens. "
+                "To run unauthenticated instead, set COLLECTOR_ALLOW_ANONYMOUS=1.",
+                raw,
+            )
     purged = await storage.purge_old_records()
     if purged:
         log.info("purged %d records older than retention", purged)

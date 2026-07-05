@@ -24,9 +24,12 @@ def test_bad_key_rejected(client):
     assert r.status_code == 401
 
 
-def test_key_via_query_param(client):
+def test_key_via_query_param_is_rejected(client):
+    # ?key= is deliberately not accepted on HTTP endpoints: query strings leak
+    # into access logs / proxies / browser history. Headers only (the WS
+    # handshake is the one sanctioned exception).
     r = client.get("/stats", params={"key": "test-key"})
-    assert r.status_code == 200
+    assert r.status_code == 401
 
 
 def test_key_via_x_api_key_header(client):
@@ -342,3 +345,86 @@ def test_build_csp_env_override(client, monkeypatch):
     # Empty override disables CSP entirely.
     monkeypatch.setenv("COLLECTOR_CSP", "")
     assert appmod._build_csp(None) is None
+
+
+# --- operational metrics -----------------------------------------------------
+
+def test_metrics_endpoint_counts_ingest(client):
+    client.post("/collector", json=exception_event(fingerprint="m1"), headers=AUTH)
+    r = client.get("/metrics", headers=AUTH)
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/plain")
+    body = r.text
+    assert "jvmscout_events_accepted_total" in body
+    assert "jvmscout_ingest_batches_total" in body
+    # Counters are monotonic across the test session; just require presence + auth.
+    assert client.get("/metrics").status_code == 401
+
+
+# --- retention: stale instances + vacuum -------------------------------------
+
+def test_purge_evicts_stale_instances_and_vacuums(client):
+    client.post("/collector", json=agent_start_event(instanceId="stale-1"), headers=AUTH)
+    client.post("/collector", json=exception_event(), headers=AUTH)
+
+    async def _age_and_purge():
+        from sqlalchemy import update
+        async with storage.session() as s:
+            await s.execute(update(storage.ExceptionRow)
+                            .values(received_at="2000-01-01T00:00:00Z"))
+            await s.execute(update(storage.JvmInstanceRow)
+                            .values(received_at="2000-01-01T00:00:00Z"))
+            await s.commit()
+        # vacuum_threshold=1 forces the SQLite VACUUM branch to execute too.
+        return await storage.purge_old_records(vacuum_threshold=1)
+
+    purged = run_async(_age_and_purge())
+    assert purged == 1
+    assert client.get("/jvm-instances", headers=AUTH).json() == []
+
+
+def test_ingest_touches_instance_last_seen(client):
+    client.post("/collector", json=agent_start_event(instanceId="live-1"), headers=AUTH)
+
+    async def _age_instance():
+        from sqlalchemy import update
+        async with storage.session() as s:
+            await s.execute(update(storage.JvmInstanceRow)
+                            .values(received_at="2000-01-01T00:00:00Z"))
+            await s.commit()
+
+    run_async(_age_instance())
+    # An ingested event from that instance refreshes last-seen...
+    client.post("/collector", json=exception_event(instanceId="live-1"), headers=AUTH)
+    # ...so the staleness purge keeps it.
+    run_async(storage.purge_old_records())
+    assert len(client.get("/jvm-instances", headers=AUTH).json()) == 1
+
+
+# --- auth bootstrap / master tokens ------------------------------------------
+
+def test_bootstrap_mints_master_token_only_when_store_empty(client):
+    from collector import security
+
+    async def _bootstrap():
+        return await security.ensure_bootstrap_admin_token()
+
+    raw = run_async(_bootstrap())
+    assert raw and raw.startswith("stk_")
+
+    async def _resolve(tok):
+        security.token_store.reset()
+        return await security.resolve_principal(tok)
+
+    principal = run_async(_resolve(raw))
+    assert principal is not None and principal.is_master
+    assert principal.scope is None  # sees every project
+
+    # Idempotent: with tokens present, no second bootstrap happens.
+    assert run_async(_bootstrap()) is None
+
+
+def test_master_role_cannot_be_minted_via_api(client):
+    r = client.post("/tokens", json={"name": "evil", "role": "master"}, headers=AUTH)
+    assert r.status_code == 200
+    assert r.json()["role"] == "ingest"  # unknown/forbidden roles fall back

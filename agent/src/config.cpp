@@ -1,7 +1,9 @@
 #include "config.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <sstream>
 
 namespace {
@@ -54,6 +56,25 @@ std::vector<std::string> default_redact_props() {
     return {"password", "passwd", "secret", "token", "apikey", "api.key", "credential"};
 }
 
+// Read an API key from a file (first line, trimmed). Preferred over api_key=
+// on the -agentpath option string, which is visible to every user on the host
+// via the process command line (ps / Task Manager / /proc/*/cmdline).
+std::string read_key_file(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) {
+        std::fprintf(stderr, "[jvmti-agent] api_key_file '%s' could not be read\n",
+                     path.c_str());
+        return "";
+    }
+    std::string line;
+    std::getline(in, line);
+    const char* ws = " \t\r\n";
+    const size_t b = line.find_first_not_of(ws);
+    if (b == std::string::npos) return "";
+    const size_t e = line.find_last_not_of(ws);
+    return line.substr(b, e - b + 1);
+}
+
 }  // namespace
 
 bool redact_matches(const std::vector<std::string>& patterns, const std::string& name) {
@@ -91,6 +112,10 @@ AgentConfig parse_config(const char* options) {
             else if (key == "https") cfg.https = to_bool(val);
             else if (key == "tls_insecure") cfg.tls_insecure = to_bool(val);
             else if (key == "api_key") cfg.api_key = val;
+            else if (key == "api_key_file") {
+                std::string k = read_key_file(val);
+                if (!k.empty()) cfg.api_key = k;
+            }
             else if (key == "deny") { for (auto& p : split(val, ';')) cfg.deny.push_back(p); }
             else if (key == "location_deny") { for (auto& p : split(val, ';')) cfg.location_deny.push_back(p); }
             else if (key == "capture_packages") cfg.capture_packages = split(val, ';');

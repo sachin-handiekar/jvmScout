@@ -29,6 +29,7 @@ import httpx
 
 from . import storage
 from .config import settings
+from .metrics import metrics
 
 log = logging.getLogger("collector.alerts")
 
@@ -271,6 +272,7 @@ async def _evaluate_rule(rule: dict, ev: dict, fields: dict,
         project_id=project_id)
     rule["last_triggered_at"] = fired_at  # keep the cached copy consistent
     rule_cache.reset()  # reflect the new last_triggered_at on next read
+    metrics.alerts_fired += 1
     log.info("alert rule %s fired: %s", rule.get("id"), reason)
     return True
 
@@ -356,6 +358,7 @@ def schedule_evaluation(ev: dict, project_id: Optional[str] = None) -> None:
             _queue.put_nowait((ev, project_id))
         except asyncio.QueueFull:
             _skipped += 1
+            metrics.alerts_skipped += 1
             if _skipped == 1 or _skipped % 1000 == 0:
                 log.warning("alert queue full; %d evaluations skipped so far",
                             _skipped)
