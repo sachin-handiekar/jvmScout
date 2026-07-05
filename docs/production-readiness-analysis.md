@@ -4,13 +4,19 @@
 **Scope:** `agent/` (C++17 JVMTI agent), `bci-classfile/` (Java bytecode transformer), `collector/` (Python FastAPI collector), deployment/CI surface.
 
 > **Remediation status (updated 2026-07-05, branch `fix/production-hardening`):**
-> all P0 items and P1 items 6–10 from §9 have been implemented and verified
-> (C1 partially: SQLite WAL/indexes/batching/SQL-aggregation landed; first-class
-> Postgres + migrations remain P2). Fixed: C2 (verify-or-fallback mitigation),
-> C3, C4 (+`occurrences` wire field), C5, H1, H2 (method cache + sharded
-> sampler), H3 (COUNT_ONLY aggregation), H4, H5, H6, H7 (token-keyed rate
-> limit; `?key=` removal still open), H8, H9, M1, M7. Findings below are kept
-> as originally written for the audit trail; see git history for the fixes.
+> all P0 items, P1 items 6–10, and the P2 tier from §9 have been implemented
+> and verified. Fixed: C1 (WAL/indexes/batch-txn/SQL-aggregation + asyncpg,
+> Alembic revision 0004, Postgres 16 CI job), C2 (block-local dominance capture
+> + post-transform verify-and-fallback), C3, C4 (+`occurrences` wire
+> field/column), C5, H1, H2 (method cache + sharded sampler), H3 (COUNT_ONLY
+> aggregation), H4, H5, H6, H7 (auth-by-default bootstrap token, `?key=`
+> removed from HTTP, `api_key_file=`, token-keyed rate limit), H8, H9, M1, M4
+> (stale-instance eviction + VACUUM), M7, M9 (/metrics + audit log), M10
+> (constraint documented in docs/horizontal-scalability.md; distributed
+> backends remain future work). Still open: pre-aggregated rollups table
+> (optional at current query cost) and the multi-replica broker/limiter
+> backends. Findings below are kept as originally written for the audit trail;
+> see git history for the fixes.
 **Reviewed as:** an expert JVM/JVMTI engineer assessing readiness for real-world production use with **concurrent users** (many dashboard viewers, many tenants) and **multiple instrumented applications** (many JVMs reporting concurrently).
 
 ---
