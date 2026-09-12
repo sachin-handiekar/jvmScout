@@ -1,8 +1,8 @@
 # jvmScout Roadmap
 
-Forward-looking engineering roadmap. For the launch-readiness checklist see
-[PRODUCTION_READINESS.md](PRODUCTION_READINESS.md); for architecture see
-[ANALYSIS.md](ANALYSIS.md) and [PLAN.md](PLAN.md).
+Forward-looking engineering roadmap. For the architecture and implementation
+plan, see [PLAN.md](PLAN.md); for the current multi-replica design, see
+[docs/horizontal-scalability.md](docs/horizontal-scalability.md).
 
 ---
 

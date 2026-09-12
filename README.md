@@ -504,8 +504,7 @@ been exercised end-to-end on Linux/macOS.
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [Code of Conduct](CODE_OF_CONDUCT.md) before opening a pull request. Security
 issues should follow the process in [SECURITY.md](SECURITY.md). The
-[ROADMAP.md](ROADMAP.md) and [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)
-documents track what's planned and what's left before launch.
+[ROADMAP.md](ROADMAP.md) documents the planned work and remaining launch items.
 
 ## 📄 License
 
