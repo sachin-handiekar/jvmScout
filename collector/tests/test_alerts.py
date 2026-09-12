@@ -9,6 +9,7 @@ from __future__ import annotations
 from conftest import AUTH, exception_event, run_async
 
 from collector import alerts, storage
+from collector.models import ExceptionEvent
 
 
 # --- per-fingerprint event series -----------------------------------------
@@ -247,10 +248,12 @@ def test_volume_threshold_sums_occurrences(client, monkeypatch):
     """One agent-aggregated COUNT_ONLY summary carrying occurrences=10 counts
     as 10 real throws for volume alerting."""
     _stub_delivery(monkeypatch)
-    client.post("/collector",
-                json=exception_event(fingerprint="agg", captureMode="COUNT_ONLY",
-                                     occurrences=10),
-                headers=AUTH)
+    # Store directly instead of POSTing to /collector: ingest schedules an
+    # asynchronous evaluation, which could run only after the rule below is
+    # created and consume its first firing before this deterministic check.
+    event = exception_event(fingerprint="agg", captureMode="COUNT_ONLY",
+                            occurrences=10)
+    run_async(storage.store_exception(ExceptionEvent.model_validate(event), event))
     _make_rule(client, trigger_type="volume_threshold",
                config={"destination": "https://hooks.example.com/x",
                        "threshold": 10, "windowMinutes": 60})
