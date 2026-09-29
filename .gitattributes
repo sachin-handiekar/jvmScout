@@ -1,0 +1,17 @@
+# GitHub Linguist: the core of JVMScout is the native JVMTI agent (C++).
+# Exclude the dashboard UI, demo apps, tests and migrations from language
+# stats so the repository's language bar reflects the agent.
+
+# Treat agent headers as C++ (Linguist can misdetect .h as C/Objective-C)
+agent/**/*.h linguist-language=C++
+
+# Web dashboard (TypeScript/React)
+frontend/** linguist-detectable=false
+
+# Sample / test applications
+sample-app/** linguist-detectable=false
+test-apps/** linguist-detectable=false
+
+# Collector tests and generated DB migrations
+collector/tests/** linguist-detectable=false
+collector/migrations/** linguist-detectable=false
