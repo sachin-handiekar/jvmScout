@@ -31,7 +31,7 @@ std::string base64_encode(const std::string& in) {
 
 void SourceCache::store(const std::string& name_slash, const unsigned char* data,
                         size_t len) {
-    if (!data || len == 0) return;
+    if (!data || len == 0 || len > kMaxClassBytes) return;
     std::lock_guard<std::mutex> lock(mu_);
     if (bytes_.count(name_slash)) return;  // already cached
     if (bytes_.size() >= kMaxClasses) return;

@@ -16,9 +16,14 @@ public:
     // Cap total cached bytes and class count (app classes are usually hundreds).
     static constexpr size_t kMaxBytes = 32u * 1024 * 1024;  // 32 MiB
     static constexpr size_t kMaxClasses = 8192;
+    // Cap per class: base64 inflates by 4/3, so a class at this limit still
+    // ships (~683 KiB) inside one AsyncQueue batch (kMaxBatchBytes) and far
+    // under the collector's body limit. Larger classes just get no source view.
+    static constexpr size_t kMaxClassBytes = 512u * 1024;
 
     // Store the original bytes for a class (slash name). No-op once the byte or
-    // class budget is reached, or if already shipped/cached.
+    // class budget is reached, if the class exceeds kMaxClassBytes, or if
+    // already shipped/cached.
     void store(const std::string& name_slash, const unsigned char* data, size_t len);
 
     // If the class is cached and not yet shipped, return its base64-encoded bytes

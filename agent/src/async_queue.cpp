@@ -41,14 +41,13 @@ bool AsyncQueue::enqueue(std::string event_json) {
     return true;
 }
 
-std::string AsyncQueue::build_batch(std::deque<std::string>& batch) {
+std::string AsyncQueue::build_batch(const std::deque<std::string>& batch,
+                                    size_t lo, size_t hi) {
     // Wire format: a JSON array of event objects.
     std::string body = "[";
-    bool first = true;
-    for (auto& ev : batch) {
-        if (!first) body += ',';
-        body += ev;
-        first = false;
+    for (size_t i = lo; i < hi; ++i) {
+        if (i != lo) body += ',';
+        body += batch[i];
     }
     body += "]";
     return body;
@@ -68,6 +67,60 @@ SendResult AsyncQueue::send_with_retry(const std::string& body) {
         backoff = std::min(backoff * 2, std::chrono::milliseconds(kRetryMaxMs));
     }
     return SendResult::kRetryable;
+}
+
+void AsyncQueue::send_range(std::deque<std::string>& batch, size_t lo,
+                            size_t hi, BatchOutcome& out) {
+    if (!out.retry.empty()) {
+        // An earlier part failed transiently: don't burn more retries on a
+        // collector that is down, keep these for the next round.
+        for (size_t i = lo; i < hi; ++i) out.retry.push_back(std::move(batch[i]));
+        return;
+    }
+    switch (send_with_retry(build_batch(batch, lo, hi))) {
+        case SendResult::kOk:
+            return;
+        case SendResult::kTooLarge:
+            if (hi - lo > 1) {
+                const size_t mid = lo + (hi - lo) / 2;
+                send_range(batch, lo, mid, out);
+                send_range(batch, mid, hi, out);
+                return;
+            } else {
+                // A single event the collector will never accept: drop it,
+                // counted, and log sparsely.
+                uint64_t nth = oversized_.fetch_add(1) + 1;
+                dropped_.fetch_add(1, std::memory_order_relaxed);
+                if (nth == 1 || nth % 100 == 0) {
+                    std::fprintf(stderr,
+                        "[jvmti-agent] collector %s rejected an event as too "
+                        "large (413, %zu bytes) - raise COLLECTOR_MAX_BODY_BYTES "
+                        "(%llu oversized events dropped so far)\n",
+                        label_.c_str(), batch[lo].size(),
+                        static_cast<unsigned long long>(nth));
+                }
+            }
+            return;
+        case SendResult::kPermanent: {
+            // The collector definitively rejected the batch (e.g. 401 from a
+            // revoked token). Retrying can't help: drop, count, and log
+            // sparsely so a dead token doesn't spam stderr.
+            uint64_t nth = permanent_rejects_.fetch_add(1) + 1;
+            dropped_.fetch_add(hi - lo, std::memory_order_relaxed);
+            out.permanent = true;
+            if (nth == 1 || nth % 100 == 0) {
+                std::fprintf(stderr,
+                    "[jvmti-agent] collector %s permanently rejected a "
+                    "batch (4xx) - check api_key/endpoint (%llu batches "
+                    "rejected so far)\n",
+                    label_.c_str(), static_cast<unsigned long long>(nth));
+            }
+            return;
+        }
+        case SendResult::kRetryable:
+            for (size_t i = lo; i < hi; ++i) out.retry.push_back(std::move(batch[i]));
+            return;
+    }
 }
 
 void AsyncQueue::requeue_front(std::deque<std::string>& batch) {
@@ -104,7 +157,13 @@ void AsyncQueue::run() {
             });
 
             const bool stopping = !running_.load();
-            while (!queue_.empty() && batch.size() < kBatchSize) {
+            // Fill up to kBatchSize events or kMaxBatchBytes, always taking at
+            // least one so an oversized event still gets its own attempt.
+            size_t bytes = 0;
+            while (!queue_.empty() && batch.size() < kBatchSize &&
+                   (batch.empty() ||
+                    bytes + queue_.front().size() <= kMaxBatchBytes)) {
+                bytes += queue_.front().size();
                 batch.push_back(std::move(queue_.front()));
                 queue_.pop_front();
             }
@@ -122,37 +181,23 @@ void AsyncQueue::run() {
         }
 
         if (transport_) {
-            switch (send_with_retry(build_batch(batch))) {
-                case SendResult::kOk:
-                    break;
-                case SendResult::kPermanent: {
-                    // The collector definitively rejected the batch (e.g. 401
-                    // from a revoked token). Retrying can't help: drop, count,
-                    // and log sparsely so a dead token doesn't spam stderr.
-                    uint64_t nth = permanent_rejects_.fetch_add(1) + 1;
-                    dropped_.fetch_add(batch.size(), std::memory_order_relaxed);
-                    if (nth == 1 || nth % 100 == 0) {
-                        std::fprintf(stderr,
-                            "[jvmti-agent] collector %s permanently rejected a "
-                            "batch (4xx) - check api_key/endpoint (%llu batches "
-                            "rejected so far)\n",
-                            label_.c_str(), static_cast<unsigned long long>(nth));
-                    }
-                    if (stopping) { drop_batch_and_queue(batch); }
-                    break;
+            BatchOutcome out;
+            send_range(batch, 0, batch.size(), out);
+            if (!out.retry.empty()) {
+                if (!stopping) {
+                    // Still failing after retries and we're not shutting
+                    // down: hold onto the events rather than dropping.
+                    requeue_front(out.retry);
+                } else {
+                    // Shutting down and the collector is unreachable: further
+                    // attempts would each burn a full HTTP timeout on the host
+                    // JVM's exit path. Drop the rest, counted.
+                    drop_batch_and_queue(out.retry);
                 }
-                case SendResult::kRetryable:
-                    if (!stopping) {
-                        // Still failing after retries and we're not shutting
-                        // down: hold onto the events rather than dropping.
-                        requeue_front(batch);
-                    } else {
-                        // Shutting down and the collector is unreachable:
-                        // further attempts would each burn a full HTTP timeout
-                        // on the host JVM's exit path. Drop the rest, counted.
-                        drop_batch_and_queue(batch);
-                    }
-                    break;
+            } else if (out.permanent && stopping) {
+                // A dead token rejects everything else too: drop what's still
+                // queued (the rejected part was already counted above).
+                drop_batch_and_queue(out.retry);
             }
         }
 

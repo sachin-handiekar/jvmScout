@@ -13,12 +13,18 @@
 
 // Bounded producer/consumer queue serviced by a single background thread.
 // The throwing thread only enqueues a serialized event (never blocks on I/O);
-// the worker batches events (20/batch, 2s flush) and POSTs via the transport.
-// At capacity (10k) new events are silently dropped and counted.
+// the worker batches events (20/batch or 1 MiB, 2s flush) and POSTs via the
+// transport. At capacity (10k) new events are silently dropped and counted.
 class AsyncQueue {
 public:
     static constexpr size_t kMaxQueue = 10000;
     static constexpr size_t kBatchSize = 20;
+    // Byte budget per POST body, well under the collector's default 5 MiB
+    // ingest limit (COLLECTOR_MAX_BODY_BYTES). A single event larger than this
+    // is still sent on its own; if the collector answers 413 the batch is
+    // split in half and resent, down to a lone event, which is then dropped
+    // (counted) since it can never fit.
+    static constexpr size_t kMaxBatchBytes = 1024u * 1024;
     static constexpr int kFlushMs = 2000;
     // On a transient POST failure: retry up to kSendRetries times with
     // exponential backoff (kRetryBaseMs, doubling, capped at kRetryMaxMs), then
@@ -47,7 +53,18 @@ public:
 
 private:
     void run();
-    std::string build_batch(std::deque<std::string>& batch);
+    std::string build_batch(const std::deque<std::string>& batch, size_t lo,
+                            size_t hi);
+    // Outcome of sending one batch, possibly as several split sub-batches.
+    struct BatchOutcome {
+        std::deque<std::string> retry;  // transiently failed, in original order
+        bool permanent = false;         // collector definitively rejected a part
+    };
+    // POST batch[lo, hi). On 413 the range is halved and each half sent on its
+    // own. Once a part fails transiently, the rest of the range is not
+    // attempted and goes straight to out.retry (the collector is down).
+    void send_range(std::deque<std::string>& batch, size_t lo, size_t hi,
+                    BatchOutcome& out);
     // Try to POST a batch with bounded retry/backoff. kOk on success;
     // kPermanent on a definitive rejection (no retries); kRetryable after
     // exhausting retries on transient failures.
@@ -69,6 +86,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> dropped_{0};
     std::atomic<uint64_t> permanent_rejects_{0};  // batches rejected with 4xx
+    std::atomic<uint64_t> oversized_{0};          // lone events rejected with 413
     // Drain deadline, valid once running_ goes false (published by the
     // running_ store in stop(), read by the worker after observing it).
     std::chrono::steady_clock::time_point stop_deadline_{};

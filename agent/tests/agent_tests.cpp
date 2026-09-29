@@ -12,6 +12,7 @@
 #include "itransport.h"
 #include "json_utils.h"
 #include "sampling.h"
+#include "source_cache.h"
 
 #include <atomic>
 #include <chrono>
@@ -301,15 +302,21 @@ static void test_redact_matches() {
 
 // Controllable in-memory transport. `result` selects the outcome of every
 // send; `delivered` counts events in successfully-sent batches (each test
-// event is the single token "x", so the count is the number of 'x' bytes in
-// the body).
+// event contains exactly one 'x', so the count is the number of 'x' bytes in
+// the body). Bodies over `max_body` get a 413 (kTooLarge), like the
+// collector's COLLECTOR_MAX_BODY_BYTES; `largest_body` records the biggest
+// body ever offered.
 class FakeTransport : public ITransport {
 public:
     std::atomic<SendResult> result{SendResult::kOk};
     std::atomic<int> send_calls{0};
     std::atomic<int> delivered{0};
+    std::atomic<size_t> max_body{static_cast<size_t>(-1)};
+    std::atomic<size_t> largest_body{0};
     SendResult send(const std::string& body) override {
         send_calls.fetch_add(1, std::memory_order_relaxed);
+        if (body.size() > largest_body.load()) largest_body = body.size();
+        if (body.size() > max_body.load()) return SendResult::kTooLarge;
         SendResult r = result.load();
         if (r != SendResult::kOk) return r;
         int n = 0;
@@ -408,6 +415,82 @@ static void test_async_queue_shutdown_is_bounded_and_counts_drops() {
     CHECK(q.dropped() == static_cast<uint64_t>(N));        // losses are visible
 }
 
+// One test event of roughly `bytes` bytes carrying a single 'x'.
+static std::string big_event(size_t bytes) {
+    return "x" + std::string(bytes > 1 ? bytes - 1 : 0, 'y');
+}
+
+// Batches are capped by bytes as well as count, so a burst of large events
+// (e.g. source_class payloads) never builds a body the collector rejects.
+static void test_async_queue_caps_batch_bytes() {
+    FakeTransport t;
+    AsyncQueue q(&t, "test");
+    q.start();
+
+    const int N = 5;  // 5 x 400 KiB: under kBatchSize, over kMaxBatchBytes
+    for (int i = 0; i < N; ++i) CHECK(q.enqueue(big_event(400 * 1024)));
+
+    poll_until([&] { return t.delivered.load() >= N; }, 8000);
+    CHECK(t.delivered.load() == N);
+    CHECK(t.send_calls.load() >= 3);  // split across several POSTs
+    CHECK(t.largest_body.load() <= AsyncQueue::kMaxBatchBytes + 16);
+    CHECK(q.dropped() == 0);
+    q.stop();
+}
+
+// A 413 on a multi-event batch must not lose it: the queue halves the batch
+// and resends until every part fits.
+static void test_async_queue_splits_batch_on_413() {
+    FakeTransport t;
+    t.max_body = 450;  // fits ~4 events of 100 bytes, not 20
+    AsyncQueue q(&t, "test");
+    q.start();
+
+    const int N = AsyncQueue::kBatchSize;  // exactly one batch -> immediate flush
+    for (int i = 0; i < N; ++i) CHECK(q.enqueue(big_event(100)));
+
+    poll_until([&] { return t.delivered.load() >= N; }, 5000);
+    CHECK(t.delivered.load() == N);  // everything arrived via smaller batches
+    CHECK(q.dropped() == 0);
+    q.stop();
+}
+
+// A single event the collector can never accept is dropped (counted) on its
+// own; the events that shared its batch are still delivered.
+static void test_async_queue_drops_only_the_oversized_event() {
+    FakeTransport t;
+    t.max_body = 500;
+    AsyncQueue q(&t, "test");
+    q.start();
+
+    const int N = AsyncQueue::kBatchSize;
+    for (int i = 0; i < N; ++i)
+        CHECK(q.enqueue(big_event(i == 7 ? 2000 : 50)));
+
+    poll_until([&] {
+        return t.delivered.load() + static_cast<int>(q.dropped()) >= N;
+    }, 5000);
+    CHECK(t.delivered.load() == N - 1);
+    CHECK(q.dropped() == 1);
+    q.stop();
+}
+
+// Classes over the per-class cap are never cached, so they can't produce a
+// source_class event too large to ship; normal classes ship exactly once.
+static void test_source_cache_caps_class_size() {
+    SourceCache c;
+    std::string small(1024, 'a');
+    std::string huge(SourceCache::kMaxClassBytes + 1, 'b');
+    c.store("com/acme/Small",
+            reinterpret_cast<const unsigned char*>(small.data()), small.size());
+    c.store("com/acme/Huge",
+            reinterpret_cast<const unsigned char*>(huge.data()), huge.size());
+    CHECK(c.take_unshipped("com/acme/Huge").empty());
+    std::string b64 = c.take_unshipped("com/acme/Small");
+    CHECK(b64 == base64_encode(small));
+    CHECK(c.take_unshipped("com/acme/Small").empty());  // once per class
+}
+
 int main() {
     test_fingerprint();
     test_filters();
@@ -428,6 +511,10 @@ int main() {
     test_async_queue_delivers_when_up();
     test_async_queue_permanent_rejection_drops_without_retry();
     test_async_queue_shutdown_is_bounded_and_counts_drops();
+    test_async_queue_caps_batch_bytes();
+    test_async_queue_splits_batch_on_413();
+    test_async_queue_drops_only_the_oversized_event();
+    test_source_cache_caps_class_size();
     if (g_fail == 0) std::printf("ALL %s\n", "PASS");
     else std::printf("%d CHECK(S) FAILED\n", g_fail);
     return g_fail ? 1 : 0;

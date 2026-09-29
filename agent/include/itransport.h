@@ -13,6 +13,8 @@ enum class SendResult {
     kOk,         // 2xx
     kRetryable,  // transient: network error, 5xx, 408, 429
     kPermanent,  // definitive rejection: other 4xx/3xx (e.g. 401 revoked token)
+    kTooLarge,   // 413: the body exceeds the collector's size limit; a smaller
+                 // batch may still succeed, so the queue splits and resends
 };
 
 // Pluggable HTTP transport. Implemented by WinHttpTransport (Windows) and
@@ -28,6 +30,7 @@ public:
 // Map an HTTP status code to a SendResult (shared by the transports).
 inline SendResult classify_http_status(long status) {
     if (status >= 200 && status < 300) return SendResult::kOk;
+    if (status == 413) return SendResult::kTooLarge;
     if (status == 408 || status == 429 || status >= 500) return SendResult::kRetryable;
     return SendResult::kPermanent;
 }

@@ -100,6 +100,7 @@ if(AGENT_BUILD_TESTS)
     src/async_queue.cpp
     src/count_aggregator.cpp
     src/event_serializer.cpp
+    src/source_cache.cpp
     ${TEST_PLATFORM_SOURCES}
   )
   # jvmti.h is needed (header-only) by event_model.h's metric types.
